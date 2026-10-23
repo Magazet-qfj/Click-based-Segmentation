@@ -140,15 +140,15 @@ class InteractiveDemoApp(ttk.Frame):
             cv2.imwrite(filename, mask * 255)
 
     def _save_foreground_callback(self):
-        image, mask = self.controller.image, self.controller.result_mask
-        if image is None or mask is None:
+        image, alpha = self.controller.image, self.controller.result_alpha
+        if image is None or alpha is None:
             messagebox.showwarning("提示", "还没有分割结果，请先加载图片并点击分割。")
             return
         filename = filedialog.asksaveasfilename(
             parent=self.master, initialfile='foreground.png', defaultextension='.png',
             filetypes=[("PNG", "*.png"), ("所有文件", "*.*")])
         if filename:
-            rgba = np.dstack([image, mask * 255])
+            rgba = np.dstack([image, alpha])
             cv2.imwrite(filename, cv2.cvtColor(rgba, cv2.COLOR_RGBA2BGRA))
 
     def _click_callback(self, is_positive, x, y):

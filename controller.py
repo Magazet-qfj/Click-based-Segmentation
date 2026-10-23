@@ -47,6 +47,10 @@ class InteractiveController:
     def result_mask(self):
         return self.segmenter.result_mask
 
+    @property
+    def result_alpha(self):
+        return self.segmenter.result_alpha
+
     def get_visualization(self, alpha_blend=0.5, click_radius=3):
         if self.image is None:
             return None
