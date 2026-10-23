@@ -1,0 +1,196 @@
+"""Tkinter application window for click-based interactive segmentation.
+
+The window guides the user step by step: load an image, click the foreground
+target, optionally click background to exclude regions, then save the result.
+"""
+
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox
+
+import cv2
+import numpy as np
+
+from canvas import CanvasImage
+from controller import InteractiveController
+
+
+class InteractiveDemoApp(ttk.Frame):
+    def __init__(self, master, segmenter, initial_image=''):
+        super().__init__(master)
+        self.master = master
+        master.title("点击式交互分割 (GrabCut)")
+        master.geometry("1120x720")
+
+        self.controller = InteractiveController(segmenter, update_image_callback=self._update_image)
+
+        self.alpha_blend = tk.DoubleVar(value=0.5)
+        self.click_radius = tk.IntVar(value=3)
+
+        self._build_menu()
+        self._build_layout()
+        self.image_on_canvas.register_click_callback(self._click_callback)
+
+        if initial_image:
+            self._load_image_from_path(initial_image)
+
+    # -------------------------------------------------------------- UI layout
+    def _build_menu(self):
+        bar = tk.Menu(self.master)
+        file_menu = tk.Menu(bar, tearoff=0)
+        file_menu.add_command(label="加载图片...", command=self._load_image_callback)
+        file_menu.add_separator()
+        file_menu.add_command(label="保存掩码...", command=self._save_mask_callback)
+        file_menu.add_command(label="保存前景抠图...", command=self._save_foreground_callback)
+        file_menu.add_separator()
+        file_menu.add_command(label="退出", command=self.master.quit)
+        bar.add_cascade(label="文件", menu=file_menu)
+        self.master.config(menu=bar)
+
+    def _build_layout(self):
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(0, weight=1)
+
+        # Left: image canvas.
+        canvas_frame = ttk.LabelFrame(self, text="图像")
+        canvas_frame.grid(row=0, column=0, sticky='nsew', padx=6, pady=6)
+        canvas_frame.rowconfigure(0, weight=1)
+        canvas_frame.columnconfigure(0, weight=1)
+        self.canvas = tk.Canvas(canvas_frame, highlightthickness=0, cursor='crosshair',
+                                width=820, height=680)
+        self.canvas.grid(row=0, column=0, sticky='nsew')
+        self.image_on_canvas = CanvasImage(self.canvas)
+
+        # Right: control panel.
+        ctrl = ttk.Frame(self, width=300)
+        ctrl.grid(row=0, column=1, sticky='ns', padx=6, pady=6)
+        ctrl.columnconfigure(0, weight=1)
+
+        self.instruction = tk.Label(
+            ctrl, text="① 请先加载一张图片", wraplength=270, justify='left',
+            anchor='w', bg='#fff3cd', fg='#333',
+            font=('Microsoft YaHei', 10), padx=10, pady=10)
+        self.instruction.grid(row=0, column=0, sticky='ew', pady=(0, 8))
+
+        self.status = tk.Label(ctrl, text="前景 0 点 · 背景 0 点", anchor='w',
+                               font=('Microsoft YaHei', 9), fg='#666')
+        self.status.grid(row=1, column=0, sticky='ew', pady=(0, 8))
+
+        clicks_frame = ttk.LabelFrame(ctrl, text="点击管理")
+        clicks_frame.grid(row=2, column=0, sticky='ew', pady=4)
+        clicks_frame.columnconfigure(0, weight=1)
+        ttk.Button(clicks_frame, text="撤销上一击", command=self._undo_click).grid(
+            row=0, column=0, sticky='ew', padx=6, pady=3)
+        ttk.Button(clicks_frame, text="清空所有点击", command=self._reset).grid(
+            row=1, column=0, sticky='ew', padx=6, pady=3)
+        ttk.Button(clicks_frame, text="重新分割", command=self._resegment).grid(
+            row=2, column=0, sticky='ew', padx=6, pady=3)
+
+        export_frame = ttk.LabelFrame(ctrl, text="导出")
+        export_frame.grid(row=3, column=0, sticky='ew', pady=4)
+        export_frame.columnconfigure(0, weight=1)
+        ttk.Button(export_frame, text="保存掩码...", command=self._save_mask_callback).grid(
+            row=0, column=0, sticky='ew', padx=6, pady=3)
+        ttk.Button(export_frame, text="保存前景抠图...", command=self._save_foreground_callback).grid(
+            row=1, column=0, sticky='ew', padx=6, pady=3)
+
+        alpha_frame = ttk.LabelFrame(ctrl, text="掩码透明度")
+        alpha_frame.grid(row=4, column=0, sticky='ew', pady=4)
+        ttk.Scale(alpha_frame, from_=0.0, to=1.0, variable=self.alpha_blend,
+                  command=lambda v: self._update_image()).pack(fill='x', padx=6, pady=3)
+
+        radius_frame = ttk.LabelFrame(ctrl, text="点击点大小")
+        radius_frame.grid(row=5, column=0, sticky='ew', pady=4)
+        ttk.Scale(radius_frame, from_=1, to=8, variable=self.click_radius,
+                  command=lambda v: self._update_image()).pack(fill='x', padx=6, pady=3)
+
+        help_text = ("操作说明：\n"
+                     "· 左键点击 = 标记前景（要分割的目标）\n"
+                     "· 右键点击 = 标记背景（排除区域）\n"
+                     "· 右键拖动 = 平移图像\n"
+                     "· 滚轮 = 缩放图像")
+        tk.Label(ctrl, text=help_text, justify='left', anchor='w',
+                 font=('Microsoft YaHei', 9), fg='#888').grid(
+            row=6, column=0, sticky='ew', pady=(8, 0))
+
+    # ------------------------------------------------------------- callbacks
+    def _load_image_callback(self):
+        filename = filedialog.askopenfilename(
+            parent=self.master,
+            filetypes=[("图片", "*.jpg *.jpeg *.png *.bmp *.tif *.tiff"), ("所有文件", "*.*")],
+            title="选择图片")
+        if filename:
+            self._load_image_from_path(filename)
+
+    def _load_image_from_path(self, path):
+        image = cv2.cvtColor(cv2.imread(path), cv2.COLOR_BGR2RGB)
+        if image is None:
+            messagebox.showerror("错误", f"无法读取图片：{path}")
+            return
+        self.controller.set_image(image)
+
+    def _save_mask_callback(self):
+        mask = self.controller.result_mask
+        if self.controller.image is None or mask is None:
+            messagebox.showwarning("提示", "还没有分割结果，请先加载图片并点击分割。")
+            return
+        filename = filedialog.asksaveasfilename(
+            parent=self.master, initialfile='mask.png', defaultextension='.png',
+            filetypes=[("PNG", "*.png"), ("BMP", "*.bmp"), ("所有文件", "*.*")])
+        if filename:
+            cv2.imwrite(filename, mask * 255)
+
+    def _save_foreground_callback(self):
+        image, mask = self.controller.image, self.controller.result_mask
+        if image is None or mask is None:
+            messagebox.showwarning("提示", "还没有分割结果，请先加载图片并点击分割。")
+            return
+        filename = filedialog.asksaveasfilename(
+            parent=self.master, initialfile='foreground.png', defaultextension='.png',
+            filetypes=[("PNG", "*.png"), ("所有文件", "*.*")])
+        if filename:
+            rgba = np.dstack([image, mask * 255])
+            cv2.imwrite(filename, cv2.cvtColor(rgba, cv2.COLOR_RGBA2BGRA))
+
+    def _click_callback(self, is_positive, x, y):
+        if self.controller.image is None:
+            messagebox.showwarning("提示", "请先加载一张图片。")
+            return
+        self.controller.add_click(x, y, is_positive)
+
+    def _undo_click(self):
+        self.controller.undo_click()
+
+    def _reset(self):
+        self.controller.reset()
+
+    def _resegment(self):
+        self.controller.resegment()
+
+    # --------------------------------------------------------------- redraw
+    def _update_image(self, reset_canvas=False):
+        image = self.controller.get_visualization(self.alpha_blend.get(), self.click_radius.get())
+        if image is not None:
+            if reset_canvas:
+                self.image_on_canvas.set_image(image, fit=True)
+            else:
+                self.image_on_canvas.reload_image(image)
+        self._update_instruction()
+
+    def _update_instruction(self):
+        if self.controller.image is None:
+            self.instruction.config(text="① 请先加载一张图片（文件 → 加载图片）", bg='#fff3cd')
+            self.status.config(text="前景 0 点 · 背景 0 点")
+            return
+
+        npos, nneg = self.controller.click_counts()
+        self.status.config(text=f"前景 {npos} 点 · 背景 {nneg} 点")
+
+        if npos == 0:
+            self.instruction.config(
+                text="② 请在要分割的目标上【左键】点击 1~3 个点，标记前景区域", bg='#fff3cd')
+        elif nneg == 0:
+            self.instruction.config(
+                text="③ 已标记前景。可【右键】点击背景排除误选，或继续左键补充前景；掩码实时更新", bg='#d9ead3')
+        else:
+            self.instruction.config(
+                text="✓ 分割已就绪。继续点击可微调，或从「文件」菜单保存结果", bg='#d9ead3')
