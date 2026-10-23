@@ -10,3 +10,7 @@ venv/
 # OS / editor cruft
 .DS_Store
 Thumbs.db
+
+# Model weights (large binaries)
+*.pth
+weights/

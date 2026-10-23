@@ -4,6 +4,7 @@ The window guides the user step by step: load an image, click the foreground
 target, optionally click background to exclude regions, then save the result.
 """
 
+import os
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
@@ -14,11 +15,29 @@ from canvas import CanvasImage
 from controller import InteractiveController
 
 
+def _imread_unicode(path):
+    """cv2.imread cannot open paths with non-ASCII (e.g. Chinese) characters on
+    Windows. Read the bytes ourselves and let cv2 decode them instead."""
+    data = np.fromfile(path, dtype=np.uint8)
+    if data.size == 0:
+        return None
+    return cv2.imdecode(data, cv2.IMREAD_COLOR)
+
+
+def _imwrite_unicode(path, image):
+    """cv2.imwrite has the same non-ASCII path bug; encode to bytes and write."""
+    ext = os.path.splitext(path)[1] or '.png'
+    ok, buf = cv2.imencode(ext, image)
+    if ok:
+        buf.tofile(path)
+    return ok
+
+
 class InteractiveDemoApp(ttk.Frame):
     def __init__(self, master, segmenter, initial_image=''):
         super().__init__(master)
         self.master = master
-        master.title("点击式交互分割 (GrabCut)")
+        master.title("点击式交互分割 (SAM)")
         master.geometry("1120x720")
 
         self.controller = InteractiveController(segmenter, update_image_callback=self._update_image)
@@ -122,10 +141,11 @@ class InteractiveDemoApp(ttk.Frame):
             self._load_image_from_path(filename)
 
     def _load_image_from_path(self, path):
-        image = cv2.cvtColor(cv2.imread(path), cv2.COLOR_BGR2RGB)
+        image = _imread_unicode(path)
         if image is None:
             messagebox.showerror("错误", f"无法读取图片：{path}")
             return
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         self.controller.set_image(image)
 
     def _save_mask_callback(self):
@@ -137,7 +157,7 @@ class InteractiveDemoApp(ttk.Frame):
             parent=self.master, initialfile='mask.png', defaultextension='.png',
             filetypes=[("PNG", "*.png"), ("BMP", "*.bmp"), ("所有文件", "*.*")])
         if filename:
-            cv2.imwrite(filename, mask * 255)
+            _imwrite_unicode(filename, mask * 255)
 
     def _save_foreground_callback(self):
         image, alpha = self.controller.image, self.controller.result_alpha
@@ -149,7 +169,7 @@ class InteractiveDemoApp(ttk.Frame):
             filetypes=[("PNG", "*.png"), ("所有文件", "*.*")])
         if filename:
             rgba = np.dstack([image, alpha])
-            cv2.imwrite(filename, cv2.cvtColor(rgba, cv2.COLOR_RGBA2BGRA))
+            _imwrite_unicode(filename, cv2.cvtColor(rgba, cv2.COLOR_RGBA2BGRA))
 
     def _click_callback(self, is_positive, x, y):
         if self.controller.image is None:

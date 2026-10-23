@@ -1,61 +1,81 @@
-"""GrabCut-based interactive segmentation engine.
+"""SAM-based interactive segmentation engine (replaces GrabCut).
 
 Converts a set of user clicks (positive = foreground, negative = background)
-into a binary segmentation mask using OpenCV's GrabCut algorithm.
+into a binary segmentation mask using Meta's Segment Anything Model (ViT-B).
 
-We use the *scribble* flavour of GrabCut: the whole image starts out as
-"probable background", and each click acts as a hard foreground/background
-seed. GrabCut grows the foreground from those seeds. This needs no bounding
-box and runs in tens of milliseconds on CPU, so it suits live click-driven
-editing (the more fg/bg clicks the user adds, the more precise the result).
+Why SAM instead of GrabCut: GrabCut's data term is colour-only, so it had no
+notion of spatial connectivity (it would pull in any same-coloured region
+anywhere in the image) and it re-fitted its global colour model on every click
+(so a background click could flip previously-selected regions). SAM instead
+encodes the whole image once with a ViT and, for each set of clicks, runs a tiny
+prompt-driven mask decoder — giving a connected, click-stable mask in
+milliseconds after the one-time image encode.
 
-The raw GrabCut output is a hard 0/1 mask, which looks jagged when enlarged
-back to full resolution. To keep the cut-out smooth we (1) upsample with
-linear interpolation instead of nearest-neighbour and (2) feather the edge,
-so the exported foreground gets a gradual alpha ramp rather than a stair-step
-edge. ``result_mask`` stays binary (for the overlay / saving a hard mask) while
-``result_alpha`` carries the soft 0..255 matte used for cutting out.
+The heavy image encoder runs once per image inside ``set_image``; every
+subsequent ``run`` only re-runs the cheap mask decoder, so interactive editing
+stays responsive even on CPU. To keep that first encode fast on a CPU-only
+machine we downscale the working copy to ``max_side`` before encoding, then
+upsample the resulting mask back to full resolution (the same trick the
+GrabCut engine used).
+
+``result_mask`` stays binary (for the overlay / saving a hard mask) while
+``result_alpha`` carries the soft 0..255 feathered matte used for cutting out.
+A median filter + morphological close first removes the checkerboard and tiny
+holes SAM's mask decoder sometimes leaves in smooth regions, so the cut-out has
+no grid-like gaps.
 """
 
 import cv2
 import numpy as np
 
 
-class GrabCutSegmenter:
-    """Click-driven foreground/background separation via ``cv2.grabCut``."""
+class SamSegmenter:
+    """Click-driven foreground/background segmentation via Segment Anything."""
 
-    # GrabCut mask constants (same values as cv2.GC_*).
-    GC_BGD = 0
-    GC_FGD = 1
-    GC_PR_BGD = 2
-    GC_PR_FGD = 3
-
-    def __init__(self, iter_count=5, max_side=800, seed_radius=5):
-        self.iter_count = iter_count
-        self.max_side = max_side      # downscale the working image to this longest side
-        self.seed_radius = seed_radius
+    def __init__(self, checkpoint, max_side=640, device='cpu', cleanup_kernel=9):
+        self.checkpoint = checkpoint   # path to sam_vit_b_01ec64.pth
+        self.max_side = max_side       # downscale the working image to this longest side
+        self.device = device
+        self.cleanup_kernel = cleanup_kernel  # median/close kernel for artifact cleanup
 
         self.image = None             # original RGB image (H, W, 3), uint8
-        self._work_image = None       # downscaled BGR image used by grabCut
+        self._predictor = None        # SamPredictor, built lazily on first set_image
+        self._work_image = None       # downscaled RGB image passed to set_image
         self._scale = 1.0             # original_size -> work_size scale factor
         self._pos_clicks = []         # (x, y) in ORIGINAL image coordinates
         self._neg_clicks = []
         self._soft_mask = None        # soft (0..1 float) mask at original resolution
 
+    # ------------------------------------------------------------------ model
+    def _load_model(self):
+        """Build the SAM model + predictor once, on first use."""
+        if self._predictor is not None:
+            return
+        print("[SamSegmenter] loading SAM ViT-B ...")
+        from segment_anything import sam_model_registry, SamPredictor
+        sam = sam_model_registry['vit_b'](checkpoint=self.checkpoint)
+        sam.to(self.device)
+        sam.eval()
+        self._predictor = SamPredictor(sam)
+        print("[SamSegmenter] model ready.")
+
     # ------------------------------------------------------------------ image
     def set_image(self, image):
-        """Set the RGB image and clear all segmentation state."""
+        """Set the RGB image, encode it once, and clear all segmentation state."""
         self.image = image
+        self._load_model()
+
         h, w = image.shape[:2]
         scale = min(1.0, self.max_side / max(h, w))
         self._scale = scale
-        bgr = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
         if scale < 1.0:
             self._work_image = cv2.resize(
-                bgr, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA
+                image, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA
             )
         else:
-            self._work_image = bgr
+            self._work_image = image
+
+        self._predictor.set_image(self._work_image)  # the slow step (image encode)
         self._pos_clicks = []
         self._neg_clicks = []
         self._soft_mask = None
@@ -81,53 +101,72 @@ class GrabCutSegmenter:
 
     # ------------------------------------------------------------ segmentation
     def run(self):
-        """(Re)compute the soft mask from the current clicks, return the binary one."""
-        if self.image is None or not self._pos_clicks:
+        """(Re)compute the mask from the current clicks, return the binary one."""
+        if self.image is None:
+            self._soft_mask = None
+            return None
+        if not self._pos_clicks:
             self._soft_mask = np.zeros(self.image.shape[:2], dtype=np.float32)
             return self.result_mask
 
-        h, w = self._work_image.shape[:2]
+        # Build point prompts from every click (foreground label=1, background=0),
+        # scaled into the working image's coordinate space.
+        coords, labels = [], []
+        for x, y in self._pos_clicks:
+            coords.append([x * self._scale, y * self._scale])
+            labels.append(1)
+        for x, y in self._neg_clicks:
+            coords.append([x * self._scale, y * self._scale])
+            labels.append(0)
 
-        # Scribble initialization: everything is probable background; the clicks
-        # are painted on top as definite foreground / background seeds.
-        mask = np.full((h, w), np.uint8(self.GC_PR_BGD), dtype=np.uint8)
-        for cx, cy in self._pos_clicks:
-            self._paint_seed(mask, cx, cy, self.GC_FGD)
-        for cx, cy in self._neg_clicks:
-            self._paint_seed(mask, cx, cy, self.GC_BGD)
+        point_coords = np.asarray(coords, dtype=np.float32)   # (N, 2)
+        point_labels = np.asarray(labels, dtype=np.int64)     # (N,)
 
-        bgd_model = np.zeros((1, 65), np.float64)
-        fgd_model = np.zeros((1, 65), np.float64)
-        cv2.grabCut(self._work_image, mask, None, bgd_model, fgd_model,
-                    self.iter_count, cv2.GC_INIT_WITH_MASK)
+        masks, scores, logits = self._predictor.predict(
+            point_coords=point_coords,
+            point_labels=point_labels,
+            multimask_output=False,
+        )
+        seg = masks[0].astype(np.uint8)  # 0/1 at working resolution
 
-        seg = np.where((mask == self.GC_FGD) | (mask == self.GC_PR_FGD), 1, 0).astype(np.uint8)
-        self._soft_mask = self._feather(self._upscale(seg))
+        # Clean up checkerboard / holes at the working resolution first (cheap,
+        # and where the artifacts are smallest), then upscale and feather.
+        seg = self._cleanup_mask(seg)
+
+        if self._scale < 1.0:
+            h, w = self.image.shape[:2]
+            seg = cv2.resize(seg.astype(np.float32), (w, h),
+                             interpolation=cv2.INTER_LINEAR)
+        else:
+            seg = seg.astype(np.float32)
+
+        self._soft_mask = self._feather(seg)
         return self.result_mask
 
     # ----------------------------------------------------------------- helpers
-    def _paint_seed(self, mask, x, y, value):
-        h, w = mask.shape[:2]
-        cx, cy = int(round(x * self._scale)), int(round(y * self._scale))
-        r = self.seed_radius
-        mask[max(0, cy - r):min(h, cy + r + 1),
-             max(0, cx - r):min(w, cx + r + 1)] = value
+    def _cleanup_mask(self, mask):
+        """Remove SAM's small mask artifacts at working resolution.
 
-    def _upscale(self, seg):
-        # Linear (float) upsampling instead of nearest-neighbour, so the
-        # low-res mask enlarges to a smooth edge rather than blocky stairs.
-        if self._scale == 1.0:
-            return seg.astype(np.float32)
-        h, w = self.image.shape[:2]
-        return cv2.resize(seg.astype(np.float32), (w, h), interpolation=cv2.INTER_LINEAR)
+        The mask decoder's transposed-convolution upsampling can leave a faint
+        checkerboard in smooth, same-coloured regions, plus occasional tiny
+        holes. A median filter kills the alternating checkerboard / salt-and-
+        pepper noise, then a morphological close fills remaining small holes and
+        bridges thin gaps. Both run at the small working resolution, where these
+        artifacts are only a few pixels wide and cheap to remove.
+
+        The kernel size is ``self.cleanup_kernel`` (odd); raise it if a coarser
+        grid remains, lower it to preserve very fine structures.
+        """
+        m = mask.astype(np.uint8)
+        k = self.cleanup_kernel
+        if k % 2 == 0:
+            k += 1
+        m = cv2.medianBlur(m, k)
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+        return cv2.morphologyEx(m, cv2.MORPH_CLOSE, kernel)
 
     def _feather(self, soft):
-        """Soften the mask edge into a gradual alpha ramp (anti-aliasing).
-
-        A binary matte has hard 0/1 edges that look jagged when cut out.
-        Blurring only the boundary turns them into a smooth 0..1 transition;
-        the radius scales with image size so it stays subtle.
-        """
+        """Soften the mask edge into a gradual alpha ramp (anti-aliasing)."""
         h, w = soft.shape[:2]
         radius = max(3, int(round(min(h, w) / 300)))
         if radius % 2 == 0:

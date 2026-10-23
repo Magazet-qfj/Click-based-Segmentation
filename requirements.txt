@@ -1,3 +1,5 @@
 opencv-python>=4.5
 numpy>=1.21
 Pillow>=9.0
+segment-anything>=1.0
+# torch / torchvision are provided by SimpleClick\simpleclick_env (see run.bat)
