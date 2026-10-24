@@ -14,3 +14,6 @@ Thumbs.db
 # Model weights (large binaries)
 *.pth
 weights/
+
+# Test images / masks (local, large binaries)
+test/
