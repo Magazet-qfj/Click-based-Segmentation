@@ -25,7 +25,15 @@ class CanvasImage:
         self._pan_moved = False
         self._right_press_time = 0.0
 
-        self.canvas.bind('<Button-1>', self._on_left_click)
+        self._box_callback = None
+        self._box_start = None       # image coords of a left-press
+        self._box_anchor = None      # canvas coords of a left-press
+        self._box_rect_id = None     # canvas id of the in-progress rubber band
+        self._box_moved = False
+
+        self.canvas.bind('<ButtonPress-1>', self._on_left_press)
+        self.canvas.bind('<B1-Motion>', self._on_left_drag)
+        self.canvas.bind('<ButtonRelease-1>', self._on_left_release)
         self.canvas.bind('<ButtonPress-3>', self._on_right_press)
         self.canvas.bind('<B3-Motion>', self._on_right_drag)
         self.canvas.bind('<ButtonRelease-3>', self._on_right_release)
@@ -34,6 +42,10 @@ class CanvasImage:
     def register_click_callback(self, callback):
         """callback(is_positive, x, y) receives image-space pixel coordinates."""
         self._click_callback = callback
+
+    def register_box_callback(self, callback):
+        """callback(x1, y1, x2, y2) receives image-space XYXY box coordinates."""
+        self._box_callback = callback
 
     # -------------------------------------------------------------- rendering
     def set_image(self, image, fit=True):
@@ -81,12 +93,55 @@ class CanvasImage:
         return None
 
     # ----------------------------------------------------------- mouse events
-    def _on_left_click(self, event):
-        if self._click_callback is None:
+    def _on_left_press(self, event):
+        if self._click_callback is None and self._box_callback is None:
             return
         coords = self._to_image_coords(event)
-        if coords:
-            self._click_callback(is_positive=True, x=coords[0], y=coords[1])
+        if coords is None:
+            return
+        self._box_start = coords
+        self._box_anchor = (event.x, event.y)
+        self._box_moved = False
+        self._box_rect_id = None
+
+    def _on_left_drag(self, event):
+        if self._box_anchor is None:
+            return
+        dx = event.x - self._box_anchor[0]
+        dy = event.y - self._box_anchor[1]
+        if abs(dx) > 3 or abs(dy) > 3:
+            self._box_moved = True
+        if not self._box_moved:
+            return
+        x0, y0 = self._box_anchor
+        if self._box_rect_id is not None:
+            self.canvas.delete(self._box_rect_id)
+        self._box_rect_id = self.canvas.create_rectangle(
+            x0, y0, event.x, event.y, outline='#ff3333', width=2)
+
+    def _on_left_release(self, event):
+        if self._box_anchor is None:
+            return
+        if self._box_rect_id is not None:
+            self.canvas.delete(self._box_rect_id)
+            self._box_rect_id = None
+        start = self._box_start
+        self._box_anchor = None
+        self._box_start = None
+
+        if self._box_moved:
+            # drag ended: commit a box (ignore aborted / degenerate drags).
+            end = self._to_image_coords(event)
+            if end is not None and self._box_callback is not None:
+                x1, y1 = start
+                x2, y2 = end
+                if abs(x2 - x1) >= 3 and abs(y2 - y1) >= 3:
+                    self._box_callback(min(x1, x2), min(y1, y2),
+                                       max(x1, x2), max(y1, y2))
+            return
+        # plain click (no meaningful drag) -> foreground point.
+        if self._click_callback is not None and start is not None:
+            self._click_callback(is_positive=True, x=start[0], y=start[1])
 
     def _on_right_press(self, event):
         self._pan_start = (event.x, event.y)

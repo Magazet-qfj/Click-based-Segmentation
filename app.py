@@ -48,6 +48,7 @@ class InteractiveDemoApp(ttk.Frame):
         self._build_menu()
         self._build_layout()
         self.image_on_canvas.register_click_callback(self._click_callback)
+        self.image_on_canvas.register_box_callback(self._box_callback)
 
         if initial_image:
             self._load_image_from_path(initial_image)
@@ -97,7 +98,7 @@ class InteractiveDemoApp(ttk.Frame):
         clicks_frame = ttk.LabelFrame(ctrl, text="点击管理")
         clicks_frame.grid(row=2, column=0, sticky='ew', pady=4)
         clicks_frame.columnconfigure(0, weight=1)
-        ttk.Button(clicks_frame, text="撤销上一击", command=self._undo_click).grid(
+        ttk.Button(clicks_frame, text="撤销上一次点击", command=self._undo_click).grid(
             row=0, column=0, sticky='ew', padx=6, pady=3)
         ttk.Button(clicks_frame, text="清空所有点击", command=self._reset).grid(
             row=1, column=0, sticky='ew', padx=6, pady=3)
@@ -124,6 +125,7 @@ class InteractiveDemoApp(ttk.Frame):
 
         help_text = ("操作说明：\n"
                      "· 左键点击 = 标记前景（要分割的目标）\n"
+                     "· 左键拖拽 = 框选目标范围\n"
                      "· 右键点击 = 标记背景（排除区域）\n"
                      "· 右键拖动 = 平移图像\n"
                      "· 滚轮 = 缩放图像")
@@ -177,6 +179,12 @@ class InteractiveDemoApp(ttk.Frame):
             return
         self.controller.add_click(x, y, is_positive)
 
+    def _box_callback(self, x1, y1, x2, y2):
+        if self.controller.image is None:
+            messagebox.showwarning("提示", "请先加载一张图片。")
+            return
+        self.controller.set_box(x1, y1, x2, y2)
+
     def _undo_click(self):
         self.controller.undo_click()
 
@@ -207,7 +215,7 @@ class InteractiveDemoApp(ttk.Frame):
 
         if npos == 0:
             self.instruction.config(
-                text="② 请在要分割的目标上【左键】点击 1~3 个点，标记前景区域", bg='#fff3cd')
+                text="② 请在目标上【左键】点击 1~3 个点，或【左键拖拽】框出目标", bg='#fff3cd')
         elif nneg == 0:
             self.instruction.config(
                 text="③ 已标记前景。可【右键】点击背景排除误选，或继续左键补充前景；掩码实时更新", bg='#d9ead3')

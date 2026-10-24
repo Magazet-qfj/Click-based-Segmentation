@@ -34,6 +34,17 @@ class InteractiveController:
         self.segmenter.reset()
         self.update_image_callback()
 
+    # ------------------------------------------------------------------- box
+    def set_box(self, x1, y1, x2, y2):
+        self.segmenter.set_box(x1, y1, x2, y2)
+        self.segmenter.run()
+        self.update_image_callback()
+
+    def clear_box(self):
+        self.segmenter.clear_box()
+        self.segmenter.run()
+        self.update_image_callback()
+
     def resegment(self):
         self.segmenter.run()
         self.update_image_callback()

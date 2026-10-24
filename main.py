@@ -28,6 +28,9 @@ def parse_args():
     parser.add_argument('--cleanup', type=int, default=9,
                         help='Mask cleanup kernel size (odd; median/close). Larger fills bigger grid holes, '
                              'smaller preserves finer detail. Default 9.')
+    parser.add_argument('--max-side', type=int, default=1024,
+                        help='Cap the working image at this longest side before encoding '
+                             '(SAM native = 1024; lower = less memory but coarser masks).')
     return parser.parse_args()
 
 
@@ -35,7 +38,8 @@ def main():
     args = parse_args()
     checkpoint = args.checkpoint or default_checkpoint()
     root = tk.Tk()
-    segmenter = SamSegmenter(checkpoint=checkpoint, cleanup_kernel=args.cleanup)
+    segmenter = SamSegmenter(checkpoint=checkpoint, cleanup_kernel=args.cleanup,
+                             max_side=args.max_side)
     app = InteractiveDemoApp(root, segmenter, initial_image=args.image)
     app.pack(fill='both', expand=True)
     root.mainloop()
