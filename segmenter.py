@@ -24,7 +24,10 @@ then upsampled back to full resolution.
 ``result_alpha`` carries the soft 0..255 feathered matte used for cutting out.
 A median filter + morphological close first removes the checkerboard and tiny
 holes SAM's mask decoder sometimes leaves in smooth regions, so the cut-out has
-no grid-like gaps.
+no grid-like gaps. The binary mask is then converted to a soft alpha by an
+edge-aware guided filter (``edge_mode='guided'``), which keeps the alpha ramp
+hugging image edges — hair strands stay thin rather than blurring — instead of
+a uniform Gaussian blur.
 """
 
 import cv2
@@ -34,11 +37,15 @@ import numpy as np
 class SamSegmenter:
     """Click-driven foreground/background segmentation via Segment Anything."""
 
-    def __init__(self, checkpoint, max_side=1024, device='cpu', cleanup_kernel=9):
+    def __init__(self, checkpoint, max_side=1024, device='cpu', cleanup_kernel=9,
+                 edge_mode='guided', edge_radius=4, edge_eps=1e-4):
         self.checkpoint = checkpoint   # path to sam_vit_b_01ec64.pth
         self.max_side = max_side       # cap the working image at this longest side (SAM native = 1024)
         self.device = device
         self.cleanup_kernel = cleanup_kernel  # median/close kernel for artifact cleanup
+        self.edge_mode = edge_mode     # 'guided' (edge-aware) or 'gaussian' (uniform blur)
+        self.edge_radius = edge_radius # guided-filter window radius at full resolution
+        self.edge_eps = edge_eps       # guided-filter regularizer (for 0..1 guide/src)
 
         self.image = None             # original RGB image (H, W, 3), uint8
         self._predictor = None        # SamPredictor, built lazily on first set_image
@@ -189,13 +196,51 @@ class SamSegmenter:
         return cv2.morphologyEx(m, cv2.MORPH_CLOSE, kernel)
 
     def _feather(self, soft):
-        """Soften the mask edge into a gradual alpha ramp (anti-aliasing)."""
+        """Turn the binary mask into a soft alpha (0..1).
+
+        'guided' runs an edge-aware guided filter so the alpha ramp follows the
+        *image* edges (hair strands stay thin and sharp instead of blurring);
+        'gaussian' is the old uniform Gaussian blur.
+        """
+        if self.edge_mode == 'guided':
+            return self._guided_feather(soft)
+        return self._gaussian_feather(soft)
+
+    def _gaussian_feather(self, soft):
         h, w = soft.shape[:2]
         radius = max(3, int(round(min(h, w) / 300)))
         if radius % 2 == 0:
             radius += 1
         soft = cv2.GaussianBlur(soft, (radius, radius), 0)
         return np.clip(soft, 0.0, 1.0)
+
+    def _guided_feather(self, soft):
+        guide = cv2.cvtColor(self.image, cv2.COLOR_RGB2GRAY).astype(np.float32) / 255.0
+        alpha = self._guided_filter(guide, soft, self.edge_radius, self.edge_eps)
+        return np.clip(alpha, 0.0, 1.0)
+
+    @staticmethod
+    def _guided_filter(guide, src, radius, eps):
+        """Edge-preserving guided filter (He et al. 2013), O(N) box-filter form.
+
+        ``guide`` is a single-channel float image in [0,1]; ``src`` is the float
+        image to smooth. The output follows the structure of ``guide``, so the
+        alpha ramp hugs image edges instead of blurring across them.
+        """
+        I = guide.astype(np.float32)
+        p = src.astype(np.float32)
+        win = (radius, radius)
+        mean_I = cv2.boxFilter(I, -1, win)
+        mean_p = cv2.boxFilter(p, -1, win)
+        mean_Ip = cv2.boxFilter(I * p, -1, win)
+        cov_Ip = mean_Ip - mean_I * mean_p
+        mean_II = cv2.boxFilter(I * I, -1, win)
+        var_I = mean_II - mean_I * mean_I
+        a = cov_Ip / (var_I + eps)
+        b = mean_p - a * mean_I
+        mean_a = cv2.boxFilter(a, -1, win)
+        mean_b = cv2.boxFilter(b, -1, win)
+        return mean_a * I + mean_b
 
     # -------------------------------------------------------------- properties
     @property
