@@ -47,6 +47,7 @@ class InteractiveDemoApp(ttk.Frame):
         self.edge_mode = tk.StringVar(value=segmenter.edge_mode)
         self.cleanup_kernel = tk.IntVar(value=segmenter.cleanup_kernel)
         self.zoom_var = tk.BooleanVar(value=segmenter.zoom_in)
+        self.matte_var = tk.BooleanVar(value=False)
 
         self._build_menu()
         self._build_layout()
@@ -115,6 +116,9 @@ class InteractiveDemoApp(ttk.Frame):
             row=0, column=0, sticky='ew', padx=6, pady=3)
         ttk.Button(export_frame, text="保存前景抠图...", command=self._save_foreground_callback).grid(
             row=1, column=0, sticky='ew', padx=6, pady=3)
+        ttk.Checkbutton(export_frame, text="抠图用真 alpha matting（发丝级，较慢）",
+                        variable=self.matte_var).grid(
+            row=2, column=0, sticky='w', padx=6, pady=(2, 3))
 
         alpha_frame = ttk.LabelFrame(ctrl, text="掩码透明度")
         alpha_frame.grid(row=4, column=0, sticky='ew', pady=4)
@@ -212,7 +216,15 @@ class InteractiveDemoApp(ttk.Frame):
     def _save_foreground_callback(self):
         if self.zoom_var.get():
             self.controller.refine()
-        image, alpha = self.controller.image, self.controller.result_alpha
+        if self.matte_var.get():
+            # Matting is a sparse solve (seconds); give a hint before blocking.
+            self.instruction.config(text="正在计算 alpha matting（发丝级，约几秒）...", bg='#fce8b2')
+            self.master.update_idletasks()
+            alpha = self.controller.result_matte
+            self._update_instruction()
+        else:
+            alpha = self.controller.result_alpha
+        image = self.controller.image
         if image is None or alpha is None:
             messagebox.showwarning("提示", "还没有分割结果，请先加载图片并点击分割。")
             return

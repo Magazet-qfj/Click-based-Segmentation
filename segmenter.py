@@ -62,6 +62,9 @@ class SamSegmenter:
         self._neg_clicks = []
         self._box = None              # (x1, y1, x2, y2) in ORIGINAL image coordinates
         self._soft_mask = None        # soft (0..1 float) mask at original resolution
+        self._matte = None            # cached true alpha matte (0..1 float) at full res
+        self.matte_radius = 10        # trimap unknown-band half-width (px, at matting res)
+        self.matte_max_side = 512     # resolution cap for the closed-form matting solve
 
     # ------------------------------------------------------------------ model
     def _load_model(self):
@@ -122,6 +125,7 @@ class SamSegmenter:
         self._neg_clicks = []
         self._box = None
         self._soft_mask = None
+        self._matte = None
 
     # ------------------------------------------------------------------- box
     def set_box(self, x1, y1, x2, y2):
@@ -142,6 +146,7 @@ class SamSegmenter:
             return self.result_mask
 
         self._soft_mask = self._feather(self._run_coarse())
+        self._matte = None
         return self.result_mask
 
     def _build_prompts(self, offset_x, offset_y, scale):
@@ -256,6 +261,7 @@ class SamSegmenter:
         full = self._upsample(coarse, h, w)
         full[cy0:cy1, cx0:cx1] = seg
         self._soft_mask = self._feather(full)
+        self._matte = None
         return self.result_mask
 
     # ----------------------------------------------------------------- helpers
@@ -350,6 +356,31 @@ class SamSegmenter:
         if self._soft_mask is None:
             return None
         return (self._soft_mask * 255.0 + 0.5).astype(np.uint8)
+
+    def matte(self):
+        """True alpha matte via closed-form matting (Levin et al. 2007).
+
+        Unlike the guided filter (which feathers a hard edge), this solves for
+        semi-transparent pixels at the boundary, so wispy hair blends with the
+        background instead of snapping to 0/1. Cached until the next click. Costs
+        a sparse linear solve (seconds), so call it at export, not per click.
+        """
+        if self._matte is None:
+            if self.image is None or self._soft_mask is None:
+                return None
+            from matting import estimate_alpha
+            self._matte = estimate_alpha(
+                self.image, self.result_mask,
+                trimap_radius=self.matte_radius, max_side=self.matte_max_side)
+        return self._matte
+
+    @property
+    def result_matte(self):
+        """Soft alpha (0..255) from closed-form matting, for hair-level cutout."""
+        m = self.matte()
+        if m is None:
+            return None
+        return (m * 255.0 + 0.5).astype(np.uint8)
 
     @property
     def has_clicks(self):

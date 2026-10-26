@@ -75,6 +75,13 @@ class InteractiveController:
     def result_alpha(self):
         return self.segmenter.result_alpha
 
+    def matte(self):
+        return self.segmenter.matte()
+
+    @property
+    def result_matte(self):
+        return self.segmenter.result_matte
+
     def get_visualization(self, alpha_blend=0.5, click_radius=3):
         if self.image is None:
             return None

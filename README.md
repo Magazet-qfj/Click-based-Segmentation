@@ -49,7 +49,8 @@ pip install -r requirements.txt
 5. 满意后从「文件」菜单保存**掩码**（二值图）或**前景抠图**（透明背景 PNG）。
 
 右侧控制面板还可调「边缘羽化方式」（`guided` 边缘感知 / `gaussian` 均匀模糊）与「掩码清理强度」
-（越小越保留发丝等细丝，越大越去除伪影）。
+（越小越保留发丝等细丝，越大越去除伪影）。导出时可勾选「抠图用真 alpha matting」——用闭式
+matting（发丝级，半透明发丝会与背景自然融合）替代 guided filter 羽化，导出前会多花几秒求解。
 
 ## 代码结构
 
@@ -63,6 +64,8 @@ pip install -r requirements.txt
 | `visuals.py` | 可视化：掩码叠加 + 点击点绘制 |
 | `eval_click.py` | 无 GUI 评估：NoC / IoU-随-点击数 + 边界 IoU/F1 边缘质量 |
 | `bench_synth.py` | 合成基线：真值边界精确已知的样张（starburst/comb/…）跑 NoC + 边界 IoU/F1；`--refine` 顺带验证 zoom-in |
+| `matting.py` | 闭式 alpha matting（Levin et al. 2007，纯 numpy/scipy）：二值 mask → trimap → 真 alpha |
+| `bench_matting.py` | P3 评估：二值 / guided / 闭式 matting 对半透明边缘的 alpha 还原 MAE |
 
 ## 引擎原理（segmenter.py）
 
@@ -96,4 +99,10 @@ python eval_click.py --image a.png --gt a_gt.png --init-box   # 从真值 bbox �
 ```bash
 python bench_synth.py                 # NoC@85/90 + 边界 IoU/F1，样张存到 bench/
 python bench_synth.py --refine        # 顺带验证局部 zoom-in 精修（实测对 SAM 无增益）
+```
+
+`bench_matting.py` 在半透明边缘（真 alpha 精确已知）上对比三种 alpha 来源，量化发丝级抠图：
+
+```bash
+python bench_matting.py               # 二值 / guided / 闭式 matting 的边界带 alpha MAE
 ```
