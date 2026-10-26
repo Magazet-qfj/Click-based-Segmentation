@@ -3,7 +3,7 @@
 Interaction:
     - left click          -> positive click callback
     - quick right click   -> negative click callback
-    - right-button drag   -> pan
+    - middle-button drag  -> pan
     - mouse wheel         -> zoom (keeps the point under the cursor fixed)
 """
 
@@ -21,8 +21,9 @@ class CanvasImage:
         self._offset = (0, 0)        # top-left of the image in canvas coords
         self._click_callback = None
 
-        self._pan_start = None
-        self._pan_moved = False
+        self._pan_start = None        # middle-drag pan anchor (canvas coords)
+        self._right_start = None      # right-press anchor, for move detection
+        self._right_moved = False
         self._right_press_time = 0.0
 
         self._box_callback = None
@@ -34,6 +35,9 @@ class CanvasImage:
         self.canvas.bind('<ButtonPress-1>', self._on_left_press)
         self.canvas.bind('<B1-Motion>', self._on_left_drag)
         self.canvas.bind('<ButtonRelease-1>', self._on_left_release)
+        self.canvas.bind('<ButtonPress-2>', self._on_middle_press)
+        self.canvas.bind('<B2-Motion>', self._on_middle_drag)
+        self.canvas.bind('<ButtonRelease-2>', self._on_middle_release)
         self.canvas.bind('<ButtonPress-3>', self._on_right_press)
         self.canvas.bind('<B3-Motion>', self._on_right_drag)
         self.canvas.bind('<ButtonRelease-3>', self._on_right_release)
@@ -143,29 +147,41 @@ class CanvasImage:
         if self._click_callback is not None and start is not None:
             self._click_callback(is_positive=True, x=start[0], y=start[1])
 
-    def _on_right_press(self, event):
+    def _on_middle_press(self, event):
         self._pan_start = (event.x, event.y)
-        self._pan_moved = False
-        self._right_press_time = event.time / 1000.0
 
-    def _on_right_drag(self, event):
+    def _on_middle_drag(self, event):
         if self._pan_start is None:
             return
         dx = event.x - self._pan_start[0]
         dy = event.y - self._pan_start[1]
-        if abs(dx) > 3 or abs(dy) > 3:
-            self._pan_moved = True
         self._offset = (self._offset[0] + dx, self._offset[1] + dy)
         self._pan_start = (event.x, event.y)
         self.canvas.move('all', dx, dy)
 
+    def _on_middle_release(self, event):
+        self._pan_start = None
+
+    def _on_right_press(self, event):
+        self._right_start = (event.x, event.y)
+        self._right_moved = False
+        self._right_press_time = event.time / 1000.0
+
+    def _on_right_drag(self, event):
+        # Right-drag no longer pans; only track movement so a dragged right-click
+        # does not accidentally register as a negative point.
+        if self._right_start is None:
+            return
+        if abs(event.x - self._right_start[0]) > 3 or abs(event.y - self._right_start[1]) > 3:
+            self._right_moved = True
+
     def _on_right_release(self, event):
         dt = event.time / 1000.0 - self._right_press_time
-        if not self._pan_moved and dt < 0.4 and self._click_callback is not None:
+        if not self._right_moved and dt < 0.4 and self._click_callback is not None:
             coords = self._to_image_coords(event)
             if coords:
                 self._click_callback(is_positive=False, x=coords[0], y=coords[1])
-        self._pan_start = None
+        self._right_start = None
 
     def _on_wheel(self, event):
         if self._original is None:

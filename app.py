@@ -53,6 +53,7 @@ class InteractiveDemoApp(ttk.Frame):
         self._build_layout()
         self.image_on_canvas.register_click_callback(self._click_callback)
         self.image_on_canvas.register_box_callback(self._box_callback)
+        self._bind_shortcuts()
 
         if initial_image:
             self._load_image_from_path(initial_image)
@@ -61,13 +62,19 @@ class InteractiveDemoApp(ttk.Frame):
     def _build_menu(self):
         bar = tk.Menu(self.master)
         file_menu = tk.Menu(bar, tearoff=0)
-        file_menu.add_command(label="加载图片...", command=self._load_image_callback)
+        file_menu.add_command(label="加载图片...\tCtrl+O", command=self._load_image_callback)
         file_menu.add_separator()
-        file_menu.add_command(label="保存掩码...", command=self._save_mask_callback)
-        file_menu.add_command(label="保存前景抠图...", command=self._save_foreground_callback)
+        file_menu.add_command(label="保存掩码...\tCtrl+S", command=self._save_mask_callback)
+        file_menu.add_command(label="保存前景抠图...\tCtrl+Shift+S", command=self._save_foreground_callback)
         file_menu.add_separator()
         file_menu.add_command(label="退出", command=self.master.quit)
         bar.add_cascade(label="文件", menu=file_menu)
+
+        edit_menu = tk.Menu(bar, tearoff=0)
+        edit_menu.add_command(label="撤销上一次点击\tCtrl+Z", command=self._undo_click)
+        edit_menu.add_command(label="清空所有点击\tEsc", command=self._reset)
+        edit_menu.add_command(label="重新分割", command=self._resegment)
+        bar.add_cascade(label="编辑", menu=edit_menu)
         self.master.config(menu=bar)
 
     def _build_layout(self):
@@ -84,10 +91,24 @@ class InteractiveDemoApp(ttk.Frame):
         self.canvas.grid(row=0, column=0, sticky='nsew')
         self.image_on_canvas = CanvasImage(self.canvas)
 
-        # Right: control panel.
-        ctrl = ttk.Frame(self, width=300)
-        ctrl.grid(row=0, column=1, sticky='ns', padx=6, pady=6)
+        # Right: scrollable control panel (follows window height; wheel scrolls it).
+        panel = ttk.Frame(self)
+        panel.grid(row=0, column=1, sticky='nsew', padx=6, pady=6)
+        panel.rowconfigure(0, weight=1)
+        panel.columnconfigure(0, weight=1)
+
+        self.ctrl_canvas = tk.Canvas(panel, highlightthickness=0, width=300)
+        self.ctrl_scrollbar = ttk.Scrollbar(panel, orient='vertical',
+                                            command=self.ctrl_canvas.yview)
+        self.ctrl_canvas.configure(yscrollcommand=self.ctrl_scrollbar.set)
+        self.ctrl_canvas.grid(row=0, column=0, sticky='nsew')
+        self.ctrl_scrollbar.grid(row=0, column=1, sticky='ns')
+
+        ctrl = ttk.Frame(self.ctrl_canvas)
+        self._ctrl_window = self.ctrl_canvas.create_window((0, 0), window=ctrl, anchor='nw')
         ctrl.columnconfigure(0, weight=1)
+        ctrl.bind('<Configure>', self._on_ctrl_configure)
+        self.ctrl_canvas.bind('<Configure>', self._on_ctrl_canvas_configure)
 
         self.instruction = tk.Label(
             ctrl, text="① 请先加载一张图片", wraplength=270, justify='left',
@@ -160,14 +181,54 @@ class InteractiveDemoApp(ttk.Frame):
             row=0, column=0, sticky='w', padx=6, pady=3)
 
         help_text = ("操作说明：\n"
-                     "· 左键点击 = 标记前景（要分割的目标）\n"
-                     "· 左键拖拽 = 框选目标范围\n"
-                     "· 右键点击 = 标记背景（排除区域）\n"
-                     "· 右键拖动 = 平移图像\n"
-                     "· 滚轮 = 缩放图像")
+                     "· 左键点击 = 标记前景 · 左键拖拽 = 框选目标\n"
+                     "· 右键点击 = 标记背景\n"
+                     "· 中键拖动 = 平移 · 滚轮 = 缩放\n"
+                     "快捷键：Ctrl+O 打开 · Ctrl+S 保存掩码\n"
+                     "Ctrl+Shift+S 保存抠图 · Ctrl+Z 撤销 · Esc 清空")
         tk.Label(ctrl, text=help_text, justify='left', anchor='w',
                  font=('Microsoft YaHei', 9), fg='#888').grid(
             row=9, column=0, sticky='ew', pady=(8, 0))
+
+        # Bottom status bar: progress / ready — separate from the step guidance.
+        self.statusbar = tk.Label(self, text="就绪", anchor='w', relief='sunken',
+                                  font=('Microsoft YaHei', 9), padx=6)
+        self.statusbar.grid(row=1, column=0, columnspan=2, sticky='ew')
+
+        # Wheel over the panel scrolls it (recursive bind covers every child).
+        self._bind_panel_wheel(ctrl)
+        self._bind_panel_wheel(self.ctrl_canvas)
+        self._bind_panel_wheel(self.ctrl_scrollbar)
+
+    # ------------------------------------------------------------- shortcuts
+    def _bind_shortcuts(self):
+        self.master.bind('<Control-o>', lambda e: self._load_image_callback())
+        self.master.bind('<Control-s>', lambda e: self._save_mask_callback())
+        self.master.bind('<Control-S>', lambda e: self._save_foreground_callback())
+        self.master.bind('<Control-z>', lambda e: self._undo_click())
+        self.master.bind('<Escape>', lambda e: self._reset())
+
+    def _set_busy(self, text):
+        self.statusbar.config(text=text)
+        self.master.update_idletasks()
+
+    def _set_idle(self):
+        self.statusbar.config(text="就绪")
+
+    # --------------------------------------------------------- panel scroll
+    def _on_ctrl_configure(self, event):
+        self.ctrl_canvas.configure(scrollregion=self.ctrl_canvas.bbox('all'))
+
+    def _on_ctrl_canvas_configure(self, event):
+        self.ctrl_canvas.itemconfigure(self._ctrl_window, width=event.width)
+
+    def _bind_panel_wheel(self, widget):
+        widget.bind('<MouseWheel>', self._on_ctrl_wheel)
+        for child in widget.winfo_children():
+            self._bind_panel_wheel(child)
+
+    def _on_ctrl_wheel(self, event):
+        self.ctrl_canvas.yview_scroll(-event.delta // 120, 'units')
 
     # ------------------------------------------------------------- callbacks
     def _load_image_callback(self):
@@ -186,19 +247,20 @@ class InteractiveDemoApp(ttk.Frame):
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
         # CPU 上图像编码要几秒，先给提示再阻塞，避免误以为卡死。
-        self.instruction.config(text="正在编码图像（CPU，约几秒）...", bg='#fce8b2')
-        self.status.config(text="请稍候")
-        self.master.update_idletasks()
+        self._set_busy("正在编码图像（CPU，约几秒）...")
         try:
             self.controller.set_image(image)
         except FileNotFoundError as e:
+            self._set_idle()
             self._update_instruction()
             messagebox.showerror("缺少 SAM 权重", str(e))
             return
         except Exception as e:
+            self._set_idle()
             self._update_instruction()
             messagebox.showerror("加载失败", f"图像编码失败：{e}")
             return
+        self._set_idle()
 
     def _save_mask_callback(self):
         if self.zoom_var.get():
@@ -218,10 +280,9 @@ class InteractiveDemoApp(ttk.Frame):
             self.controller.refine()
         if self.matte_var.get():
             # Matting is a sparse solve (seconds); give a hint before blocking.
-            self.instruction.config(text="正在计算 alpha matting（发丝级，约几秒）...", bg='#fce8b2')
-            self.master.update_idletasks()
+            self._set_busy("正在计算 alpha matting（发丝级，约几秒）...")
             alpha = self.controller.result_matte
-            self._update_instruction()
+            self._set_idle()
         else:
             alpha = self.controller.result_alpha
         image = self.controller.image
