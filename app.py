@@ -37,7 +37,7 @@ class InteractiveDemoApp(ttk.Frame):
     def __init__(self, master, segmenter, initial_image=''):
         super().__init__(master)
         self.master = master
-        master.title("点击式交互分割 (SAM)")
+        master.title("点击式交互分割")
         master.geometry("1120x720")
 
         self.controller = InteractiveController(segmenter, update_image_callback=self._update_image)
@@ -62,17 +62,17 @@ class InteractiveDemoApp(ttk.Frame):
     def _build_menu(self):
         bar = tk.Menu(self.master)
         file_menu = tk.Menu(bar, tearoff=0)
-        file_menu.add_command(label="加载图片...\tCtrl+O", command=self._load_image_callback)
+        file_menu.add_command(label="加载图片", command=self._load_image_callback)
         file_menu.add_separator()
-        file_menu.add_command(label="保存掩码...\tCtrl+S", command=self._save_mask_callback)
-        file_menu.add_command(label="保存前景抠图...\tCtrl+Shift+S", command=self._save_foreground_callback)
+        file_menu.add_command(label="保存掩码", command=self._save_mask_callback)
+        file_menu.add_command(label="保存前景抠图", command=self._save_foreground_callback)
         file_menu.add_separator()
         file_menu.add_command(label="退出", command=self.master.quit)
         bar.add_cascade(label="文件", menu=file_menu)
 
         edit_menu = tk.Menu(bar, tearoff=0)
-        edit_menu.add_command(label="撤销上一次点击\tCtrl+Z", command=self._undo_click)
-        edit_menu.add_command(label="清空所有点击\tEsc", command=self._reset)
+        edit_menu.add_command(label="撤销上一次点击", command=self._undo_click)
+        edit_menu.add_command(label="清空所有点击", command=self._reset)
         edit_menu.add_command(label="重新分割", command=self._resegment)
         bar.add_cascade(label="编辑", menu=edit_menu)
         self.master.config(menu=bar)
@@ -111,7 +111,7 @@ class InteractiveDemoApp(ttk.Frame):
         self.ctrl_canvas.bind('<Configure>', self._on_ctrl_canvas_configure)
 
         self.instruction = tk.Label(
-            ctrl, text="① 请先加载一张图片", wraplength=270, justify='left',
+            ctrl, text="请先加载一张图片", wraplength=270, justify='left',
             anchor='w', bg='#fff3cd', fg='#333',
             font=('Microsoft YaHei', 10), padx=10, pady=10)
         self.instruction.grid(row=0, column=0, sticky='ew', pady=(0, 8))
@@ -123,7 +123,7 @@ class InteractiveDemoApp(ttk.Frame):
         clicks_frame = ttk.LabelFrame(ctrl, text="点击管理")
         clicks_frame.grid(row=2, column=0, sticky='ew', pady=4)
         clicks_frame.columnconfigure(0, weight=1)
-        ttk.Button(clicks_frame, text="撤销上一次点击", command=self._undo_click).grid(
+        ttk.Button(clicks_frame, text="撤销上次点击", command=self._undo_click).grid(
             row=0, column=0, sticky='ew', padx=6, pady=3)
         ttk.Button(clicks_frame, text="清空所有点击", command=self._reset).grid(
             row=1, column=0, sticky='ew', padx=6, pady=3)
@@ -137,7 +137,7 @@ class InteractiveDemoApp(ttk.Frame):
             row=0, column=0, sticky='ew', padx=6, pady=3)
         ttk.Button(export_frame, text="保存前景抠图...", command=self._save_foreground_callback).grid(
             row=1, column=0, sticky='ew', padx=6, pady=3)
-        ttk.Checkbutton(export_frame, text="抠图用真 alpha matting（发丝级，较慢）",
+        ttk.Checkbutton(export_frame, text="启用 alpha matting",
                         variable=self.matte_var).grid(
             row=2, column=0, sticky='w', padx=6, pady=(2, 3))
 
@@ -159,7 +159,7 @@ class InteractiveDemoApp(ttk.Frame):
             values=('guided', 'gaussian'), state='readonly')
         self.edge_combo.grid(row=0, column=0, sticky='ew', padx=6, pady=3)
         self.edge_combo.bind('<<ComboboxSelected>>', self._on_edge_mode_changed)
-        tk.Label(edge_frame, text="guided=边缘感知(默认) · gaussian=均匀模糊",
+        tk.Label(edge_frame, text="guided = 边缘感知 · gaussian = 均匀模糊",
                  justify='left', anchor='w', font=('Microsoft YaHei', 8), fg='#888').grid(
             row=1, column=0, sticky='ew', padx=6, pady=(0, 3))
 
@@ -170,22 +170,22 @@ class InteractiveDemoApp(ttk.Frame):
             command=self._set_cleanup)
         self.cleanup_scale.pack(fill='x', padx=6, pady=3)
         self.cleanup_scale.bind('<ButtonRelease-1>', self._on_cleanup_release)
-        tk.Label(cleanup_frame, text="越小越保留细丝(发丝) · 越大越去除伪影",
+        tk.Label(cleanup_frame, text="越小越保留细丝，越大越去除伪影",
                  justify='left', anchor='w', font=('Microsoft YaHei', 8), fg='#888').pack(
             fill='x', padx=6, pady=(0, 3))
 
         zoom_frame = ttk.LabelFrame(ctrl, text="局部精修")
         zoom_frame.grid(row=8, column=0, sticky='ew', pady=4)
-        ttk.Checkbutton(zoom_frame, text="实验性：局部 crop 精修边缘（SAM 上实测无增益，默认关闭）",
+        ttk.Checkbutton(zoom_frame, text="实验性：局部 crop 精修边缘",
                         variable=self.zoom_var, command=self._on_zoom_changed).grid(
             row=0, column=0, sticky='w', padx=6, pady=3)
 
         help_text = ("操作说明：\n"
-                     "· 左键点击 = 标记前景 · 左键拖拽 = 框选目标\n"
-                     "· 右键点击 = 标记背景\n"
-                     "· 中键拖动 = 平移 · 滚轮 = 缩放\n"
-                     "快捷键：Ctrl+O 打开 · Ctrl+S 保存掩码\n"
-                     "Ctrl+Shift+S 保存抠图 · Ctrl+Z 撤销 · Esc 清空")
+                     "左键点击 = 标记前景，左键拖拽 = 框选目标\n"
+                     "右键点击 = 标记背景\n"
+                     "中键拖动 = 平移，滚轮 = 缩放\n"
+                     "Ctrl + O 打开, Ctrl + S 保存掩码\n"
+                     "Ctrl + Shift + S 保存抠图, Ctrl + Z 撤销, Esc 清空")
         tk.Label(ctrl, text=help_text, justify='left', anchor='w',
                  font=('Microsoft YaHei', 9), fg='#888').grid(
             row=9, column=0, sticky='ew', pady=(8, 0))
@@ -247,7 +247,7 @@ class InteractiveDemoApp(ttk.Frame):
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
         # CPU 上图像编码要几秒，先给提示再阻塞，避免误以为卡死。
-        self._set_busy("正在编码图像（CPU，约几秒）...")
+        self._set_busy("正在编码图像...")
         try:
             self.controller.set_image(image)
         except FileNotFoundError as e:
@@ -280,7 +280,7 @@ class InteractiveDemoApp(ttk.Frame):
             self.controller.refine()
         if self.matte_var.get():
             # Matting is a sparse solve (seconds); give a hint before blocking.
-            self._set_busy("正在计算 alpha matting（发丝级，约几秒）...")
+            self._set_busy("正在计算 alpha matting...")
             alpha = self.controller.result_matte
             self._set_idle()
         else:
@@ -350,7 +350,7 @@ class InteractiveDemoApp(ttk.Frame):
 
     def _update_instruction(self):
         if self.controller.image is None:
-            self.instruction.config(text="① 请先加载一张图片（文件 → 加载图片）", bg='#fff3cd')
+            self.instruction.config(text="请先加载一张图片", bg='#fff3cd')
             self.status.config(text="前景 0 点 · 背景 0 点")
             return
 
@@ -359,10 +359,10 @@ class InteractiveDemoApp(ttk.Frame):
 
         if npos == 0:
             self.instruction.config(
-                text="② 请在目标上【左键】点击 1~3 个点，或【左键拖拽】框出目标", bg='#fff3cd')
+                text="请在目标上左键点击 1~3 个点，或左键拖拽框出目标", bg='#fff3cd')
         elif nneg == 0:
             self.instruction.config(
-                text="③ 已标记前景。可【右键】点击背景排除误选，或继续左键补充前景；掩码实时更新", bg='#d9ead3')
+                text="已标记前景。可右键点击背景排除误选，或继续左键补充前景", bg='#d9ead3')
         else:
             self.instruction.config(
-                text="✓ 分割已就绪。继续点击可微调，或从「文件」菜单保存结果", bg='#d9ead3')
+                text="分割已就绪。继续点击可微调，或从「文件」菜单保存结果", bg='#d9ead3')
