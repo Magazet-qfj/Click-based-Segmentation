@@ -46,6 +46,7 @@ class InteractiveDemoApp(ttk.Frame):
         self.click_radius = tk.IntVar(value=3)
         self.edge_mode = tk.StringVar(value=segmenter.edge_mode)
         self.cleanup_kernel = tk.IntVar(value=segmenter.cleanup_kernel)
+        self.zoom_var = tk.BooleanVar(value=segmenter.zoom_in)
 
         self._build_menu()
         self._build_layout()
@@ -148,6 +149,12 @@ class InteractiveDemoApp(ttk.Frame):
                  justify='left', anchor='w', font=('Microsoft YaHei', 8), fg='#888').pack(
             fill='x', padx=6, pady=(0, 3))
 
+        zoom_frame = ttk.LabelFrame(ctrl, text="局部精修")
+        zoom_frame.grid(row=8, column=0, sticky='ew', pady=4)
+        ttk.Checkbutton(zoom_frame, text="实验性：局部 crop 精修边缘（SAM 上实测无增益，默认关闭）",
+                        variable=self.zoom_var, command=self._on_zoom_changed).grid(
+            row=0, column=0, sticky='w', padx=6, pady=3)
+
         help_text = ("操作说明：\n"
                      "· 左键点击 = 标记前景（要分割的目标）\n"
                      "· 左键拖拽 = 框选目标范围\n"
@@ -156,7 +163,7 @@ class InteractiveDemoApp(ttk.Frame):
                      "· 滚轮 = 缩放图像")
         tk.Label(ctrl, text=help_text, justify='left', anchor='w',
                  font=('Microsoft YaHei', 9), fg='#888').grid(
-            row=8, column=0, sticky='ew', pady=(8, 0))
+            row=9, column=0, sticky='ew', pady=(8, 0))
 
     # ------------------------------------------------------------- callbacks
     def _load_image_callback(self):
@@ -190,6 +197,8 @@ class InteractiveDemoApp(ttk.Frame):
             return
 
     def _save_mask_callback(self):
+        if self.zoom_var.get():
+            self.controller.refine()
         mask = self.controller.result_mask
         if self.controller.image is None or mask is None:
             messagebox.showwarning("提示", "还没有分割结果，请先加载图片并点击分割。")
@@ -201,6 +210,8 @@ class InteractiveDemoApp(ttk.Frame):
             _imwrite_unicode(filename, mask * 255)
 
     def _save_foreground_callback(self):
+        if self.zoom_var.get():
+            self.controller.refine()
         image, alpha = self.controller.image, self.controller.result_alpha
         if image is None or alpha is None:
             messagebox.showwarning("提示", "还没有分割结果，请先加载图片并点击分割。")
@@ -246,6 +257,13 @@ class InteractiveDemoApp(ttk.Frame):
 
     def _on_cleanup_release(self, event=None):
         self.controller.resegment()
+
+    def _on_zoom_changed(self):
+        self.controller.set_zoom_in(self.zoom_var.get())
+        if self.zoom_var.get():
+            self.controller.refine()
+        else:
+            self.controller.resegment()
 
     # --------------------------------------------------------------- redraw
     def _update_image(self, reset_canvas=False):

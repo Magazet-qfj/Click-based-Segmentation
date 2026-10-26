@@ -31,6 +31,10 @@ def parse_args():
     parser.add_argument('--max-side', type=int, default=1024,
                         help='Cap the working image at this longest side before encoding '
                              '(SAM native = 1024; lower = less memory but coarser masks).')
+    parser.add_argument('--zoom-in', action='store_true',
+                        help='Enable local native-res refinement: re-encode a tight crop around '
+                             'the object so its edges get more than the whole-image 1024px of '
+                             'resolution (one extra CPU encode per image).')
     return parser.parse_args()
 
 
@@ -39,7 +43,7 @@ def main():
     checkpoint = args.checkpoint or default_checkpoint()
     root = tk.Tk()
     segmenter = SamSegmenter(checkpoint=checkpoint, cleanup_kernel=args.cleanup,
-                             max_side=args.max_side)
+                             max_side=args.max_side, zoom_in=args.zoom_in)
     app = InteractiveDemoApp(root, segmenter, initial_image=args.image)
     app.pack(fill='both', expand=True)
     root.mainloop()

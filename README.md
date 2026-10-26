@@ -62,6 +62,7 @@ pip install -r requirements.txt
 | `segmenter.py` | 分割引擎：把点击作 SAM 的点提示，输出二值前景掩码 |
 | `visuals.py` | 可视化：掩码叠加 + 点击点绘制 |
 | `eval_click.py` | 无 GUI 评估：NoC / IoU-随-点击数 + 边界 IoU/F1 边缘质量 |
+| `bench_synth.py` | 合成基线：真值边界精确已知的样张（starburst/comb/…）跑 NoC + 边界 IoU/F1；`--refine` 顺带验证 zoom-in |
 
 ## 引擎原理（segmenter.py）
 
@@ -88,4 +89,11 @@ NoC@80/85/90，并在收敛后报告**边界 IoU / F1**（`--edge-radius` 控制
 ```bash
 python eval_click.py --image a.png --gt a_gt.png             # 空提示起步
 python eval_click.py --image a.png --gt a_gt.png --init-box   # 从真值 bbox 起步
+```
+
+`bench_synth.py` 生成真值边界精确已知的合成发丝/梳齿样张并跑同一批指标（基准基线）：
+
+```bash
+python bench_synth.py                 # NoC@85/90 + 边界 IoU/F1，样张存到 bench/
+python bench_synth.py --refine        # 顺带验证局部 zoom-in 精修（实测对 SAM 无增益）
 ```
