@@ -37,7 +37,7 @@ class InteractiveDemoApp(ttk.Frame):
     def __init__(self, master, segmenter, initial_image=''):
         super().__init__(master)
         self.master = master
-        master.title("点击式交互分割")
+        master.title(f"点击式交互分割 — SAM {segmenter.model_type}")
         master.geometry("1120x720")
 
         self.controller = InteractiveController(segmenter, update_image_callback=self._update_image)
@@ -47,6 +47,7 @@ class InteractiveDemoApp(ttk.Frame):
         self.edge_mode = tk.StringVar(value=segmenter.edge_mode)
         self.cleanup_kernel = tk.IntVar(value=segmenter.cleanup_kernel)
         self.matte_var = tk.BooleanVar(value=False)
+        self.refine_var = tk.BooleanVar(value=(segmenter.refine_mode == 'grabcut'))
 
         self._build_menu()
         self._build_layout()
@@ -161,6 +162,9 @@ class InteractiveDemoApp(ttk.Frame):
         tk.Label(edge_frame, text="guided = 边缘感知 · gaussian = 均匀模糊",
                  justify='left', anchor='w', font=('Microsoft YaHei', 8), fg='#888').grid(
             row=1, column=0, sticky='ew', padx=6, pady=(0, 3))
+        ttk.Checkbutton(edge_frame, text="GrabCut 全分辨率边界精修（更细，慢约几秒）",
+                        variable=self.refine_var, command=self._on_refine_changed).grid(
+            row=2, column=0, sticky='w', padx=6, pady=(2, 3))
 
         cleanup_frame = ttk.LabelFrame(ctrl, text="掩码清理强度")
         cleanup_frame.grid(row=7, column=0, sticky='ew', pady=4)
@@ -308,6 +312,10 @@ class InteractiveDemoApp(ttk.Frame):
 
     def _on_edge_mode_changed(self, event=None):
         self.controller.set_edge_mode(self.edge_mode.get())
+        self.controller.resegment()
+
+    def _on_refine_changed(self):
+        self.controller.set_refine_mode('grabcut' if self.refine_var.get() else 'off')
         self.controller.resegment()
 
     def _set_cleanup(self, value):

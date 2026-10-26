@@ -1,7 +1,7 @@
 # 点击式交互分割 (SAM)
 
 一个点击驱动的交互式图像分割桌面程序。向用户展示一个窗口，引导用户点击要分割的目标区域，
-用 Meta 的 **Segment Anything Model（SAM，ViT-B）** 实时把前景从背景中分离出来。
+用 Meta 的 **Segment Anything Model（SAM，ViT-B / ViT-L）** 实时把前景从背景中分离出来。
 
 本项目的交互方式与 [SimpleClick](../SimpleClick) 的 demo 一致（左键前景 / 右键背景），
 但引擎换成了预训练的 SAM —— 无需自己训练、CPU 上可跑。相比初版用的经典 GrabCut，SAM 的
@@ -19,6 +19,7 @@ UI 与交互范式的参考。
 cd Project
 python main.py                 # 启动空窗口，通过「文件 → 加载图片」载入图像
 python main.py --image 图.jpg   # 启动时直接载入某张图
+python main.py --model-type vit_l   # 换 ViT-L 编码器（需先下 1.25GB 权重；更慢，仅个别细结构场景更细）
 ```
 
 > `run.bat` 优先使用 `SimpleClick\simpleclick_env` 里的 Python；找不到时退回系统 `python`。
@@ -57,22 +58,23 @@ pip install -r requirements.txt
 4. 掩码会随每次点击实时更新；
 5. 满意后从「文件」菜单保存**掩码**（二值图）或**前景抠图**（透明背景 PNG）。
 
-右侧控制面板还可调「边缘羽化方式」（`guided` 边缘感知 / `gaussian` 均匀模糊）与「掩码清理强度」
-（越小越保留发丝等细丝，越大越去除伪影）。导出时可勾选「抠图用真 alpha matting」——用闭式
+右侧控制面板还可调「边缘羽化方式」（`guided` 边缘感知 / `gaussian` 均匀模糊）、「掩码清理强度」
+（越小越保留发丝等细丝，越大越去除伪影）与「GrabCut 全分辨率边界精修」（可选，个别图更细、慢约几秒，
+实测对 guided filter 边际增益中性）。导出时可勾选「抠图用真 alpha matting」——用闭式
 matting（发丝级，半透明发丝会与背景自然融合）替代 guided filter 羽化，导出前会多花几秒求解。
 
 ## 代码结构
 
 | 文件 | 职责 |
 |------|------|
-| `main.py` | 入口，创建 Tk 窗口与 `SamSegmenter` |
+| `main.py` | 入口，创建 Tk 窗口与 `SamSegmenter`（`--model-type` 选 vit_b/vit_l，`--refine grabcut`） |
 | `app.py` | Tkinter 界面：菜单、画布、引导提示、控制面板 |
 | `canvas.py` | 可缩放/平移的画布，把鼠标事件换算成图像像素坐标 |
 | `controller.py` | UI 与引擎之间的胶水层，每次点击后重跑分割并触发重绘 |
 | `segmenter.py` | 分割引擎：把点击作 SAM 的点提示，输出二值前景掩码 |
 | `visuals.py` | 可视化：掩码叠加 + 点击点绘制 |
 | `eval_click.py` | 无 GUI 评估：NoC / IoU-随-点击数 + 边界 IoU/F1 边缘质量 |
-| `bench_synth.py` | 合成基线：真值边界精确已知的样张（starburst/comb/…）跑 NoC + 边界 IoU/F1 |
+| `bench_synth.py` | 合成基线：真值边界精确已知的样张（starburst/comb/…）跑 NoC + 边界 IoU/F1；`--model-type`、`--refine grabcut` |
 | `matting.py` | 闭式 alpha matting（Levin et al. 2007，纯 numpy/scipy）：二值 mask → trimap → 真 alpha |
 | `bench_matting.py` | P3 评估：二值 / guided / 闭式 matting 对半透明边缘的 alpha 还原 MAE |
 
@@ -89,8 +91,10 @@ matting（发丝级，半透明发丝会与背景自然融合）替代 guided fi
 缩到 1024 像素的工作图上进行，最后把掩码放大回原分辨率（`max_side` 可调）。SAM 掩码天然具备空间
 连通性，且不会因新增点击而整体重算、删掉已选区域——这解决了初版 GrabCut 的两个主要问题。
 
-> 首次运行需先下载权重：`Project\weights\sam_vit_b_01ec64.pth`（约 375MB，来自
-> `https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth`）。
+> 首次运行需先下载权重：`Project\weights\sam_vit_b_01ec64.pth`（约 375MB）。若要换用
+> ViT-L，另下 `sam_vit_l_0b3195.pth`（约 1.25GB），都用
+> `https://dl.fbaipublicfiles.com/segment_anything/` 下的对应文件名。ViT-L 首帧编码约慢一倍，
+> 且实测边界精度**非全面提升**（梳齿/小目标发丝更细，大图放射发丝反而变差），故默认仍用 ViT-B。
 
 ## 评估（headless）
 
@@ -106,7 +110,9 @@ python eval_click.py --image a.png --gt a_gt.png --init-box   # 从真值 bbox �
 `bench_synth.py` 生成真值边界精确已知的合成发丝/梳齿样张并跑同一批指标（基准基线）：
 
 ```bash
-python bench_synth.py                 # NoC@85/90 + 边界 IoU/F1，样张存到 bench/
+python bench_synth.py                 # vit_b：NoC@85/90 + 边界 IoU/F1，样张存到 bench/
+python bench_synth.py --model-type vit_l   # 换成 ViT-L 编码器对比
+python bench_synth.py --refine grabcut      # 顺带测 GrabCut 全分辨率边界精修
 ```
 
 `bench_matting.py` 在半透明边缘（真 alpha 精确已知）上对比三种 alpha 来源，量化发丝级抠图：

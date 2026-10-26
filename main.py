@@ -14,32 +14,45 @@ from app import InteractiveDemoApp
 from segmenter import SamSegmenter
 
 
-def default_checkpoint():
+SAM_CHECKPOINTS = {
+    'vit_b': 'sam_vit_b_01ec64.pth',
+    'vit_l': 'sam_vit_l_0b3195.pth',
+}
+
+
+def default_checkpoint(model_type):
     here = os.path.dirname(os.path.abspath(__file__))
-    return os.path.join(here, 'weights', 'sam_vit_b_01ec64.pth')
+    return os.path.join(here, 'weights', SAM_CHECKPOINTS[model_type])
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Click-based interactive segmentation (SAM).")
     parser.add_argument('--image', type=str, default='',
                         help='Optional path to an image to load at startup.')
+    parser.add_argument('--model-type', type=str, default='vit_b', choices=('vit_b', 'vit_l'),
+                        help='SAM encoder size: vit_b (fast, ~375MB, default) or vit_l '
+                             '(heavier, ~1.25GB, ~2x encode; helps some thin-structure cases but not uniformly finer).')
     parser.add_argument('--checkpoint', type=str, default='',
-                        help='Path to the SAM ViT-B checkpoint (default: weights/sam_vit_b_01ec64.pth).')
+                        help='Path to the SAM checkpoint (default: weights/<name> per --model-type).')
     parser.add_argument('--cleanup', type=int, default=9,
                         help='Mask cleanup kernel size (odd; median/close). Larger fills bigger grid holes, '
                              'smaller preserves finer detail. Default 9.')
     parser.add_argument('--max-side', type=int, default=1024,
                         help='Cap the working image at this longest side before encoding '
                              '(SAM native = 1024; lower = less memory but coarser masks).')
+    parser.add_argument('--refine', type=str, default='off', choices=('off', 'grabcut'),
+                        help='Boundary refinement: off (default) or grabcut (full-res colour '
+                             "refinement that recovers detail SAM's 256x256 decoder blurs).")
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
-    checkpoint = args.checkpoint or default_checkpoint()
+    checkpoint = args.checkpoint or default_checkpoint(args.model_type)
     root = tk.Tk()
-    segmenter = SamSegmenter(checkpoint=checkpoint, cleanup_kernel=args.cleanup,
-                             max_side=args.max_side)
+    segmenter = SamSegmenter(checkpoint=checkpoint, model_type=args.model_type,
+                             cleanup_kernel=args.cleanup, max_side=args.max_side,
+                             refine_mode=args.refine)
     app = InteractiveDemoApp(root, segmenter, initial_image=args.image)
     app.pack(fill='both', expand=True)
     root.mainloop()

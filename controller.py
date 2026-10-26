@@ -48,6 +48,9 @@ class InteractiveController:
     def set_edge_mode(self, mode):
         self.segmenter.edge_mode = mode
 
+    def set_refine_mode(self, mode):
+        self.segmenter.refine_mode = mode
+
     def set_cleanup_kernel(self, k):
         self.segmenter.cleanup_kernel = k
 

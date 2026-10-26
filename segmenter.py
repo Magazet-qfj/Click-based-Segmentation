@@ -39,15 +39,22 @@ import numpy as np
 class SamSegmenter:
     """Click-driven foreground/background segmentation via Segment Anything."""
 
-    def __init__(self, checkpoint, max_side=1024, device='cpu', cleanup_kernel=9,
-                 edge_mode='guided', edge_radius=4, edge_eps=1e-4):
-        self.checkpoint = checkpoint   # path to sam_vit_b_01ec64.pth
+    def __init__(self, checkpoint, model_type='vit_b', max_side=1024, device='cpu',
+                 cleanup_kernel=9, edge_mode='guided', edge_radius=4, edge_eps=1e-4,
+                 refine_mode='off', grabcut_iters=3, grabcut_max_side=1536,
+                 grabcut_band=6):
+        self.checkpoint = checkpoint   # path to the SAM checkpoint (vit_b / vit_l)
+        self.model_type = model_type   # 'vit_b' or 'vit_l' (sam_model_registry key)
         self.max_side = max_side       # cap the working image at this longest side (SAM native = 1024)
         self.device = device
         self.cleanup_kernel = cleanup_kernel  # median/close kernel for artifact cleanup
         self.edge_mode = edge_mode     # 'guided' (edge-aware) or 'gaussian' (uniform blur)
         self.edge_radius = edge_radius # guided-filter window radius at full resolution
         self.edge_eps = edge_eps       # guided-filter regularizer (for 0..1 guide/src)
+        self.refine_mode = refine_mode       # 'off' (default) or 'grabcut' full-res boundary refinement
+        self.grabcut_iters = grabcut_iters   # GrabCut EM iterations (colour-model refinement)
+        self.grabcut_max_side = grabcut_max_side  # cap the GrabCut working resolution (speed)
+        self.grabcut_band = grabcut_band      # probable-band half-width (px) around the contour
 
         self.image = None             # original RGB image (H, W, 3), uint8
         self._predictor = None        # SamPredictor for the whole image (built lazily)
@@ -69,10 +76,10 @@ class SamSegmenter:
         if not os.path.exists(self.checkpoint):
             raise FileNotFoundError(
                 f"SAM 权重文件不存在：{self.checkpoint}\n"
-                f"请下载 sam_vit_b_01ec64.pth 放到 weights/ 目录（见 README）。")
-        print("[SamSegmenter] loading SAM ViT-B ...")
+                f"请下载 {os.path.basename(self.checkpoint)} 放到 weights/ 目录（见 README）。")
+        print(f"[SamSegmenter] loading SAM {self.model_type.upper()} ...")
         from segment_anything import sam_model_registry, SamPredictor
-        sam = sam_model_registry['vit_b'](checkpoint=self.checkpoint)
+        sam = sam_model_registry[self.model_type](checkpoint=self.checkpoint)
         sam.to(self.device)
         sam.eval()
         self._predictor = SamPredictor(sam)
@@ -139,7 +146,10 @@ class SamSegmenter:
             self._soft_mask = np.zeros(self.image.shape[:2], dtype=np.float32)
             return self.result_mask
 
-        self._soft_mask = self._feather(self._run_coarse())
+        soft = self._run_coarse()
+        if self.refine_mode == 'grabcut':
+            soft = self.refine_boundary((soft >= 0.5).astype(np.uint8)).astype(np.float32)
+        self._soft_mask = self._feather(soft)
         self._matte = None
         return self.result_mask
 
@@ -192,6 +202,52 @@ class SamSegmenter:
         seg = self._decode(self._predictor, 0.0, 0.0, self._scale)
         seg = self._cleanup_mask(seg)
         return self._upsample(seg, *self.image.shape[:2])
+
+    def refine_boundary(self, binary):
+        """Refine a full-resolution binary mask's contour with GrabCut.
+
+        SAM's mask decoder outputs a fixed 256×256 mask that is then upsampled to
+        the image, so the contour is coarse on large images (hair strands / thin
+        teeth blur). GrabCut re-fits the boundary from full-resolution colour,
+        using the coarse mask only to seed a probable band around its contour, so
+        it recovers detail SAM's decoder never had while staying connected and
+        click-stable.
+
+        ``binary`` is 0/1 uint8 at full image resolution. The image + mask are
+        downscaled to ``grabcut_max_side`` to bound the solve time, refined there,
+        and upsampled back. Returns a 0/1 uint8 mask (unchanged if the object is
+        smaller than the band or fills the frame — nothing to refine).
+        """
+        img = self.image
+        h, w = binary.shape[:2]
+        cap = self.grabcut_max_side
+        scale = min(1.0, cap / max(h, w))
+        if scale < 1.0:
+            tw, th = int(w * scale), int(h * scale)
+            img_w = cv2.resize(img, (tw, th), interpolation=cv2.INTER_AREA)
+            mask_w = (cv2.resize(binary.astype(np.float32), (tw, th),
+                                 interpolation=cv2.INTER_LINEAR) >= 0.5).astype(np.uint8)
+        else:
+            img_w, mask_w = img, binary
+
+        band = self.grabcut_band
+        trimap = np.full(mask_w.shape, cv2.GC_PR_BGD, np.uint8)
+        trimap[mask_w > 0] = cv2.GC_PR_FGD
+        k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * band + 1, 2 * band + 1))
+        trimap[cv2.erode(mask_w, k) > 0] = cv2.GC_FGD
+        trimap[cv2.erode((mask_w == 0).astype(np.uint8), k) > 0] = cv2.GC_BGD
+        if not (trimap == cv2.GC_FGD).any() or not (trimap == cv2.GC_BGD).any():
+            return binary  # object too small / fills frame; nothing to refine
+
+        bgm = np.zeros((1, 65), np.float64)
+        fgm = np.zeros((1, 65), np.float64)
+        cv2.grabCut(img_w, trimap, None, bgm, fgm, self.grabcut_iters, cv2.GC_INIT_WITH_MASK)
+        refined_w = ((trimap == cv2.GC_FGD) | (trimap == cv2.GC_PR_FGD)).astype(np.uint8)
+
+        if scale < 1.0:
+            return (cv2.resize(refined_w.astype(np.float32), (w, h),
+                               interpolation=cv2.INTER_LINEAR) >= 0.5).astype(np.uint8)
+        return refined_w
 
     # ----------------------------------------------------------------- helpers
     def _cleanup_mask(self, mask):

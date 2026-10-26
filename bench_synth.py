@@ -99,23 +99,29 @@ CASES = [
 
 def main():
     ap = argparse.ArgumentParser(description="Synthetic P0 baseline (NoC + boundary metrics).")
-    ap.add_argument('--checkpoint', default='', help='SAM checkpoint (default weights/sam_vit_b_01ec64.pth).')
+    ap.add_argument('--checkpoint', default='', help='SAM checkpoint (default weights/<name> per --model-type).')
+    ap.add_argument('--model-type', type=str, default='vit_b', choices=('vit_b', 'vit_l'),
+                    help='SAM encoder size (vit_b or vit_l).')
     ap.add_argument('--max-clicks', type=int, default=20, help='Click budget per case.')
     ap.add_argument('--max-side', type=int, default=1024, help='Working-image longest side.')
     ap.add_argument('--edge-radius', type=int, default=2, help='Band half-width for boundary IoU/F1.')
+    ap.add_argument('--refine', type=str, default='off', choices=('off', 'grabcut'),
+                    help='Boundary refinement to measure alongside the coarse mask (grabcut).')
     ap.add_argument('--out', default='bench', help='Directory to save generated images + GT.')
     args = ap.parse_args()
 
     here = os.path.dirname(os.path.abspath(__file__))
     if not args.checkpoint:
-        args.checkpoint = os.path.join(here, 'weights', 'sam_vit_b_01ec64.pth')
+        name = 'sam_vit_l_0b3195.pth' if args.model_type == 'vit_l' else 'sam_vit_b_01ec64.pth'
+        args.checkpoint = os.path.join(here, 'weights', name)
 
     img_dir = os.path.join(args.out, 'images')
     mask_dir = os.path.join(args.out, 'masks')
     os.makedirs(img_dir, exist_ok=True)
     os.makedirs(mask_dir, exist_ok=True)
 
-    seg = SamSegmenter(checkpoint=args.checkpoint, max_side=args.max_side)
+    seg = SamSegmenter(checkpoint=args.checkpoint, model_type=args.model_type,
+                       max_side=args.max_side)
 
     rows = []
     for name, gt, fg, bg in CASES:
@@ -129,16 +135,27 @@ def main():
         noc85 = _noc(ious, 0.85)
         noc90 = _noc(ious, 0.90)
         biou, bf1 = _boundary_metrics(seg.result_mask, gt, radius=args.edge_radius)
+        rbiou = rbf1 = float('nan')
+        if args.refine == 'grabcut':
+            seg.refine_mode = 'grabcut'
+            seg.run()
+            rbiou, rbf1 = _boundary_metrics(seg.result_mask, gt, radius=args.edge_radius)
         dt = time.time() - t0
-        rows.append((name, len(ious), ious[-1], noc85, noc90, biou, bf1, dt))
+        rows.append((name, len(ious), ious[-1], noc85, noc90, biou, bf1, rbiou, rbf1, dt))
+        extra = f"  -> refined BIoU={rbiou:.3f} F1={rbf1:.3f}" if args.refine == 'grabcut' else ""
         print(f"[{name}] clicks={len(ious)}  finalIoU={ious[-1]:.3f}  "
-              f"NoC85={noc85}  NoC90={noc90}  BIoU={biou:.3f}  F1={bf1:.3f}  ({dt:.1f}s)")
+              f"NoC85={noc85}  NoC90={noc90}  BIoU={biou:.3f}  F1={bf1:.3f}{extra}  ({dt:.1f}s)")
 
-    print("\n=== synthetic baseline ===")
+    print(f"\n=== synthetic baseline (refine={args.refine}) ===")
     hdr = f"{'case':<11} {'clicks':>6} {'IoU':>6} {'NoC85':>6} {'NoC90':>6} {'BIoU':>7} {'F1':>7}"
+    if args.refine == 'grabcut':
+        hdr += f" {'rBIoU':>7} {'rF1':>7}"
     print(hdr)
-    for name, n, iou, n85, n90, biou, bf1, _ in rows:
-        print(f"{name:<11} {n:>6} {iou:>6.3f} {n85:>6} {n90:>6} {biou:>7.3f} {bf1:>7.3f}")
+    for name, n, iou, n85, n90, biou, bf1, rbiou, rbf1, _ in rows:
+        line = f"{name:<11} {n:>6} {iou:>6.3f} {n85:>6} {n90:>6} {biou:>7.3f} {bf1:>7.3f}"
+        if args.refine == 'grabcut':
+            line += f" {rbiou:>7.3f} {rbf1:>7.3f}"
+        print(line)
     print(f"\nGenerated {len(CASES)} cases under '{args.out}/'.")
 
 
