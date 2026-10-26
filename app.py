@@ -46,7 +46,6 @@ class InteractiveDemoApp(ttk.Frame):
         self.click_radius = tk.IntVar(value=3)
         self.edge_mode = tk.StringVar(value=segmenter.edge_mode)
         self.cleanup_kernel = tk.IntVar(value=segmenter.cleanup_kernel)
-        self.zoom_var = tk.BooleanVar(value=segmenter.zoom_in)
         self.matte_var = tk.BooleanVar(value=False)
 
         self._build_menu()
@@ -71,7 +70,7 @@ class InteractiveDemoApp(ttk.Frame):
         bar.add_cascade(label="文件", menu=file_menu)
 
         edit_menu = tk.Menu(bar, tearoff=0)
-        edit_menu.add_command(label="撤销上一次点击", command=self._undo_click)
+        edit_menu.add_command(label="撤销上次点击", command=self._undo_click)
         edit_menu.add_command(label="清空所有点击", command=self._reset)
         edit_menu.add_command(label="重新分割", command=self._resegment)
         bar.add_cascade(label="编辑", menu=edit_menu)
@@ -174,12 +173,6 @@ class InteractiveDemoApp(ttk.Frame):
                  justify='left', anchor='w', font=('Microsoft YaHei', 8), fg='#888').pack(
             fill='x', padx=6, pady=(0, 3))
 
-        zoom_frame = ttk.LabelFrame(ctrl, text="局部精修")
-        zoom_frame.grid(row=8, column=0, sticky='ew', pady=4)
-        ttk.Checkbutton(zoom_frame, text="实验性：局部 crop 精修边缘",
-                        variable=self.zoom_var, command=self._on_zoom_changed).grid(
-            row=0, column=0, sticky='w', padx=6, pady=3)
-
         help_text = ("操作说明：\n"
                      "左键点击 = 标记前景，左键拖拽 = 框选目标\n"
                      "右键点击 = 标记背景\n"
@@ -188,7 +181,7 @@ class InteractiveDemoApp(ttk.Frame):
                      "Ctrl + Shift + S 保存抠图, Ctrl + Z 撤销, Esc 清空")
         tk.Label(ctrl, text=help_text, justify='left', anchor='w',
                  font=('Microsoft YaHei', 9), fg='#888').grid(
-            row=9, column=0, sticky='ew', pady=(8, 0))
+            row=8, column=0, sticky='ew', pady=(8, 0))
 
         # Bottom status bar: progress / ready — separate from the step guidance.
         self.statusbar = tk.Label(self, text="就绪", anchor='w', relief='sunken',
@@ -263,8 +256,6 @@ class InteractiveDemoApp(ttk.Frame):
         self._set_idle()
 
     def _save_mask_callback(self):
-        if self.zoom_var.get():
-            self.controller.refine()
         mask = self.controller.result_mask
         if self.controller.image is None or mask is None:
             messagebox.showwarning("提示", "还没有分割结果，请先加载图片并点击分割。")
@@ -276,8 +267,6 @@ class InteractiveDemoApp(ttk.Frame):
             _imwrite_unicode(filename, mask * 255)
 
     def _save_foreground_callback(self):
-        if self.zoom_var.get():
-            self.controller.refine()
         if self.matte_var.get():
             # Matting is a sparse solve (seconds); give a hint before blocking.
             self._set_busy("正在计算 alpha matting...")
@@ -330,13 +319,6 @@ class InteractiveDemoApp(ttk.Frame):
 
     def _on_cleanup_release(self, event=None):
         self.controller.resegment()
-
-    def _on_zoom_changed(self):
-        self.controller.set_zoom_in(self.zoom_var.get())
-        if self.zoom_var.get():
-            self.controller.refine()
-        else:
-            self.controller.resegment()
 
     # --------------------------------------------------------------- redraw
     def _update_image(self, reset_canvas=False):

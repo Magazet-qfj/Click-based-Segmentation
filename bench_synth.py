@@ -89,10 +89,10 @@ CASES = [
     ("wavy_blob", _wavy_blob(), (60, 180, 120), (180, 90, 60)),
     ("comb", _comb(), (230, 200, 60), (60, 80, 160)),
     # Large variant: the whole image is downscaled to 1024 for the coarse mask,
-    # so zoom-in has real resolution headroom to recover on the thin strands.
+    # so the thin strands approach the resolution limit of the 1024 encode.
     ("starburst_2k", _starburst(2048), (210, 120, 70), (70, 120, 210)),
-    # Small object in a large image — the case zoom-in is actually for: the
-    # strands are tiny in the 2048 image, so the coarse 1024 encode blurs them.
+    # Small object in a large image: the strands are tiny in the 2048 image,
+    # so the coarse 1024 encode blurs them — the hard end of the baseline.
     ("starburst_small", _starburst(2048, max_frac=0.22), (210, 120, 70), (70, 120, 210)),
 ]
 
@@ -103,7 +103,6 @@ def main():
     ap.add_argument('--max-clicks', type=int, default=20, help='Click budget per case.')
     ap.add_argument('--max-side', type=int, default=1024, help='Working-image longest side.')
     ap.add_argument('--edge-radius', type=int, default=2, help='Band half-width for boundary IoU/F1.')
-    ap.add_argument('--refine', action='store_true', help='One-shot zoom-in refinement after the click loop.')
     ap.add_argument('--out', default='bench', help='Directory to save generated images + GT.')
     args = ap.parse_args()
 
@@ -116,7 +115,7 @@ def main():
     os.makedirs(img_dir, exist_ok=True)
     os.makedirs(mask_dir, exist_ok=True)
 
-    seg = SamSegmenter(checkpoint=args.checkpoint, max_side=args.max_side, zoom_in=args.refine)
+    seg = SamSegmenter(checkpoint=args.checkpoint, max_side=args.max_side)
 
     rows = []
     for name, gt, fg, bg in CASES:
@@ -130,26 +129,16 @@ def main():
         noc85 = _noc(ious, 0.85)
         noc90 = _noc(ious, 0.90)
         biou, bf1 = _boundary_metrics(seg.result_mask, gt, radius=args.edge_radius)
-        rbiou = rbf1 = float('nan')
-        if args.refine:
-            seg.refine_mask()
-            rbiou, rbf1 = _boundary_metrics(seg.result_mask, gt, radius=args.edge_radius)
         dt = time.time() - t0
-        rows.append((name, len(ious), ious[-1], noc85, noc90, biou, bf1, rbiou, rbf1, dt))
-        extra = f"  -> refined BIoU={rbiou:.3f} F1={rbf1:.3f}" if args.refine else ""
+        rows.append((name, len(ious), ious[-1], noc85, noc90, biou, bf1, dt))
         print(f"[{name}] clicks={len(ious)}  finalIoU={ious[-1]:.3f}  "
-              f"NoC85={noc85}  NoC90={noc90}  BIoU={biou:.3f}  F1={bf1:.3f}{extra}  ({dt:.1f}s)")
+              f"NoC85={noc85}  NoC90={noc90}  BIoU={biou:.3f}  F1={bf1:.3f}  ({dt:.1f}s)")
 
-    print(f"\n=== synthetic baseline (refine={args.refine}) ===")
+    print("\n=== synthetic baseline ===")
     hdr = f"{'case':<11} {'clicks':>6} {'IoU':>6} {'NoC85':>6} {'NoC90':>6} {'BIoU':>7} {'F1':>7}"
-    if args.refine:
-        hdr += f" {'rBIoU':>7} {'rF1':>7}"
     print(hdr)
-    for name, n, iou, n85, n90, biou, bf1, rbiou, rbf1, _ in rows:
-        line = f"{name:<11} {n:>6} {iou:>6.3f} {n85:>6} {n90:>6} {biou:>7.3f} {bf1:>7.3f}"
-        if args.refine:
-            line += f" {rbiou:>7.3f} {rbf1:>7.3f}"
-        print(line)
+    for name, n, iou, n85, n90, biou, bf1, _ in rows:
+        print(f"{name:<11} {n:>6} {iou:>6.3f} {n85:>6} {n90:>6} {biou:>7.3f} {bf1:>7.3f}")
     print(f"\nGenerated {len(CASES)} cases under '{args.out}/'.")
 
 

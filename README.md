@@ -72,7 +72,7 @@ matting（发丝级，半透明发丝会与背景自然融合）替代 guided fi
 | `segmenter.py` | 分割引擎：把点击作 SAM 的点提示，输出二值前景掩码 |
 | `visuals.py` | 可视化：掩码叠加 + 点击点绘制 |
 | `eval_click.py` | 无 GUI 评估：NoC / IoU-随-点击数 + 边界 IoU/F1 边缘质量 |
-| `bench_synth.py` | 合成基线：真值边界精确已知的样张（starburst/comb/…）跑 NoC + 边界 IoU/F1；`--refine` 顺带验证 zoom-in |
+| `bench_synth.py` | 合成基线：真值边界精确已知的样张（starburst/comb/…）跑 NoC + 边界 IoU/F1 |
 | `matting.py` | 闭式 alpha matting（Levin et al. 2007，纯 numpy/scipy）：二值 mask → trimap → 真 alpha |
 | `bench_matting.py` | P3 评估：二值 / guided / 闭式 matting 对半透明边缘的 alpha 还原 MAE |
 
@@ -107,7 +107,6 @@ python eval_click.py --image a.png --gt a_gt.png --init-box   # 从真值 bbox �
 
 ```bash
 python bench_synth.py                 # NoC@85/90 + 边界 IoU/F1，样张存到 bench/
-python bench_synth.py --refine        # 顺带验证局部 zoom-in 精修（实测对 SAM 无增益）
 ```
 
 `bench_matting.py` 在半透明边缘（真 alpha 精确已知）上对比三种 alpha 来源，量化发丝级抠图：

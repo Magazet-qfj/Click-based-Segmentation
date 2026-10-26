@@ -40,8 +40,7 @@ class SamSegmenter:
     """Click-driven foreground/background segmentation via Segment Anything."""
 
     def __init__(self, checkpoint, max_side=1024, device='cpu', cleanup_kernel=9,
-                 edge_mode='guided', edge_radius=4, edge_eps=1e-4,
-                 zoom_in=False, zoom_margin=0.4):
+                 edge_mode='guided', edge_radius=4, edge_eps=1e-4):
         self.checkpoint = checkpoint   # path to sam_vit_b_01ec64.pth
         self.max_side = max_side       # cap the working image at this longest side (SAM native = 1024)
         self.device = device
@@ -49,13 +48,9 @@ class SamSegmenter:
         self.edge_mode = edge_mode     # 'guided' (edge-aware) or 'gaussian' (uniform blur)
         self.edge_radius = edge_radius # guided-filter window radius at full resolution
         self.edge_eps = edge_eps       # guided-filter regularizer (for 0..1 guide/src)
-        self.zoom_in = zoom_in         # local native-res refinement of the object region
-        self.zoom_margin = zoom_margin # extra padding around the object bbox (fraction)
 
         self.image = None             # original RGB image (H, W, 3), uint8
         self._predictor = None        # SamPredictor for the whole image (built lazily)
-        self._sam_model = None        # shared SAM model (the crop predictor reuses it)
-        self._crop_predictor = None   # second predictor on a tight crop (built lazily)
         self._work_image = None       # downscaled RGB image passed to set_image
         self._scale = 1.0             # original_size -> work_size scale factor
         self._pos_clicks = []         # (x, y) in ORIGINAL image coordinates
@@ -80,7 +75,6 @@ class SamSegmenter:
         sam = sam_model_registry['vit_b'](checkpoint=self.checkpoint)
         sam.to(self.device)
         sam.eval()
-        self._sam_model = sam
         self._predictor = SamPredictor(sam)
         print("[SamSegmenter] model ready.")
 
@@ -199,81 +193,7 @@ class SamSegmenter:
         seg = self._cleanup_mask(seg)
         return self._upsample(seg, *self.image.shape[:2])
 
-    def refine_mask(self):
-        """One-shot zoom-in refinement (for export, not the live loop).
-
-        Re-decodes a tight crop around the current object (mask bbox ∪ all click
-        points ∪ box, plus margin) at finer-than-whole-image resolution, so small
-        objects in large photos get sharper edges. Including the click points in
-        the crop keeps every click inside it even where the coarse mask is thin.
-        Costs one extra CPU encode, so apply it once the user has finished."""
-        if not self.zoom_in or self.image is None:
-            return self.result_mask
-        if not self._pos_clicks and self._box is None:
-            return self.result_mask
-
-        h, w = self.image.shape[:2]
-        coarse = self._decode(self._predictor, 0.0, 0.0, self._scale)
-        coarse = self._cleanup_mask(coarse)
-
-        ys, xs = np.where(coarse > 0)
-        x0 = y0 = 1e18
-        x1 = y1 = -1e18
-        if len(xs) >= 4:
-            x0, x1 = float(xs.min() / self._scale), float(xs.max() / self._scale)
-            y0, y1 = float(ys.min() / self._scale), float(ys.max() / self._scale)
-        for x, y in self._pos_clicks + self._neg_clicks:
-            x0, x1 = min(x0, x), max(x1, x)
-            y0, y1 = min(y0, y), max(y1, y)
-        if self._box is not None:
-            bx1, by1, bx2, by2 = self._box
-            x0, x1 = min(x0, bx1), max(x1, bx2)
-            y0, y1 = min(y0, by1), max(y1, by2)
-        if x1 < 0:
-            return self.result_mask
-
-        mw = int((x1 - x0) * self.zoom_margin)
-        mh = int((y1 - y0) * self.zoom_margin)
-        cx0 = max(0, int(x0) - mw - 2)
-        cy0 = max(0, int(y0) - mh - 2)
-        cx1 = min(w, int(x1) + mw + 3)
-        cy1 = min(h, int(y1) + mh + 3)
-
-        crop_scale = min(1.0, self.max_side / max(cy1 - cy0, cx1 - cx0))
-        if crop_scale <= self._scale:
-            return self.result_mask  # no resolution headroom
-
-        crop_img = self.image[cy0:cy1, cx0:cx1]
-        if self._crop_predictor is None:
-            from segment_anything import SamPredictor
-            self._crop_predictor = SamPredictor(self._sam_model)
-        self._crop_predictor.set_image(self._resize_work(crop_img, crop_scale))
-
-        # Feed the coarse mask back as a mask prompt (in the crop's frame) so the
-        # re-decode refines the coarse boundary instead of growing a fatter mask.
-        coarse_full = self._upsample(coarse, h, w)
-        mask_input = self._mask_to_logits(coarse_full[cy0:cy1, cx0:cx1])
-
-        seg = self._decode(self._crop_predictor, cx0, cy0, crop_scale, mask_input=mask_input)
-        seg = self._cleanup_mask(seg)
-        seg = self._upsample(seg, cy1 - cy0, cx1 - cx0)
-
-        full = self._upsample(coarse, h, w)
-        full[cy0:cy1, cx0:cx1] = seg
-        self._soft_mask = self._feather(full)
-        self._matte = None
-        return self.result_mask
-
     # ----------------------------------------------------------------- helpers
-    @staticmethod
-    def _mask_to_logits(mask):
-        """Convert a 0/1 float mask (any size) to the 256x256 logits SAM's mask
-        decoder expects as a mask prompt."""
-        low = cv2.resize(np.clip(mask, 0.0, 1.0).astype(np.float32), (256, 256),
-                         interpolation=cv2.INTER_LINEAR)
-        low = np.clip(low, 0.01, 0.99)
-        return (np.log(low / (1.0 - low)))[None, ...].astype(np.float32)
-
     def _cleanup_mask(self, mask):
         """Remove SAM's small mask artifacts at working resolution.
 

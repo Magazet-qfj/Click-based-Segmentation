@@ -51,13 +51,6 @@ class InteractiveController:
     def set_cleanup_kernel(self, k):
         self.segmenter.cleanup_kernel = k
 
-    def set_zoom_in(self, enabled):
-        self.segmenter.zoom_in = enabled
-
-    def refine(self):
-        self.segmenter.refine_mask()
-        self.update_image_callback()
-
     def resegment(self):
         self.segmenter.run()
         self.update_image_callback()
