@@ -15,8 +15,8 @@ class InteractiveController:
 
     # ------------------------------------------------------------ image state
     def set_image(self, image):
+        self.segmenter.set_image(image)  # may raise; only update self.image on success
         self.image = image
-        self.segmenter.set_image(image)
         self.update_image_callback(reset_canvas=True)
 
     # ------------------------------------------------------------ interaction
@@ -44,6 +44,12 @@ class InteractiveController:
         self.segmenter.clear_box()
         self.segmenter.run()
         self.update_image_callback()
+
+    def set_edge_mode(self, mode):
+        self.segmenter.edge_mode = mode
+
+    def set_cleanup_kernel(self, k):
+        self.segmenter.cleanup_kernel = k
 
     def resegment(self):
         self.segmenter.run()

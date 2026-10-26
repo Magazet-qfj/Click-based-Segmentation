@@ -44,6 +44,8 @@ class InteractiveDemoApp(ttk.Frame):
 
         self.alpha_blend = tk.DoubleVar(value=0.5)
         self.click_radius = tk.IntVar(value=3)
+        self.edge_mode = tk.StringVar(value=segmenter.edge_mode)
+        self.cleanup_kernel = tk.IntVar(value=segmenter.cleanup_kernel)
 
         self._build_menu()
         self._build_layout()
@@ -123,6 +125,29 @@ class InteractiveDemoApp(ttk.Frame):
         ttk.Scale(radius_frame, from_=1, to=8, variable=self.click_radius,
                   command=lambda v: self._update_image()).pack(fill='x', padx=6, pady=3)
 
+        edge_frame = ttk.LabelFrame(ctrl, text="边缘羽化方式")
+        edge_frame.grid(row=6, column=0, sticky='ew', pady=4)
+        edge_frame.columnconfigure(0, weight=1)
+        self.edge_combo = ttk.Combobox(
+            edge_frame, textvariable=self.edge_mode,
+            values=('guided', 'gaussian'), state='readonly')
+        self.edge_combo.grid(row=0, column=0, sticky='ew', padx=6, pady=3)
+        self.edge_combo.bind('<<ComboboxSelected>>', self._on_edge_mode_changed)
+        tk.Label(edge_frame, text="guided=边缘感知(默认) · gaussian=均匀模糊",
+                 justify='left', anchor='w', font=('Microsoft YaHei', 8), fg='#888').grid(
+            row=1, column=0, sticky='ew', padx=6, pady=(0, 3))
+
+        cleanup_frame = ttk.LabelFrame(ctrl, text="掩码清理强度")
+        cleanup_frame.grid(row=7, column=0, sticky='ew', pady=4)
+        self.cleanup_scale = ttk.Scale(
+            cleanup_frame, from_=1, to=15, variable=self.cleanup_kernel,
+            command=self._set_cleanup)
+        self.cleanup_scale.pack(fill='x', padx=6, pady=3)
+        self.cleanup_scale.bind('<ButtonRelease-1>', self._on_cleanup_release)
+        tk.Label(cleanup_frame, text="越小越保留细丝(发丝) · 越大越去除伪影",
+                 justify='left', anchor='w', font=('Microsoft YaHei', 8), fg='#888').pack(
+            fill='x', padx=6, pady=(0, 3))
+
         help_text = ("操作说明：\n"
                      "· 左键点击 = 标记前景（要分割的目标）\n"
                      "· 左键拖拽 = 框选目标范围\n"
@@ -131,7 +156,7 @@ class InteractiveDemoApp(ttk.Frame):
                      "· 滚轮 = 缩放图像")
         tk.Label(ctrl, text=help_text, justify='left', anchor='w',
                  font=('Microsoft YaHei', 9), fg='#888').grid(
-            row=6, column=0, sticky='ew', pady=(8, 0))
+            row=8, column=0, sticky='ew', pady=(8, 0))
 
     # ------------------------------------------------------------- callbacks
     def _load_image_callback(self):
@@ -148,7 +173,21 @@ class InteractiveDemoApp(ttk.Frame):
             messagebox.showerror("错误", f"无法读取图片：{path}")
             return
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        self.controller.set_image(image)
+
+        # CPU 上图像编码要几秒，先给提示再阻塞，避免误以为卡死。
+        self.instruction.config(text="正在编码图像（CPU，约几秒）...", bg='#fce8b2')
+        self.status.config(text="请稍候")
+        self.master.update_idletasks()
+        try:
+            self.controller.set_image(image)
+        except FileNotFoundError as e:
+            self._update_instruction()
+            messagebox.showerror("缺少 SAM 权重", str(e))
+            return
+        except Exception as e:
+            self._update_instruction()
+            messagebox.showerror("加载失败", f"图像编码失败：{e}")
+            return
 
     def _save_mask_callback(self):
         mask = self.controller.result_mask
@@ -192,6 +231,20 @@ class InteractiveDemoApp(ttk.Frame):
         self.controller.reset()
 
     def _resegment(self):
+        self.controller.resegment()
+
+    def _on_edge_mode_changed(self, event=None):
+        self.controller.set_edge_mode(self.edge_mode.get())
+        self.controller.resegment()
+
+    def _set_cleanup(self, value):
+        k = int(round(float(value)))
+        if k % 2 == 0:
+            k += 1
+        self.cleanup_kernel.set(k)
+        self.controller.set_cleanup_kernel(k)
+
+    def _on_cleanup_release(self, event=None):
         self.controller.resegment()
 
     # --------------------------------------------------------------- redraw

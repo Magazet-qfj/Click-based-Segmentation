@@ -48,6 +48,9 @@ pip install -r requirements.txt
 4. 掩码会随每次点击实时更新；
 5. 满意后从「文件」菜单保存**掩码**（二值图）或**前景抠图**（透明背景 PNG）。
 
+右侧控制面板还可调「边缘羽化方式」（`guided` 边缘感知 / `gaussian` 均匀模糊）与「掩码清理强度」
+（越小越保留发丝等细丝，越大越去除伪影）。
+
 ## 代码结构
 
 | 文件 | 职责 |
@@ -58,6 +61,7 @@ pip install -r requirements.txt
 | `controller.py` | UI 与引擎之间的胶水层，每次点击后重跑分割并触发重绘 |
 | `segmenter.py` | 分割引擎：把点击作 SAM 的点提示，输出二值前景掩码 |
 | `visuals.py` | 可视化：掩码叠加 + 点击点绘制 |
+| `eval_click.py` | 无 GUI 评估：NoC / IoU-随-点击数 + 边界 IoU/F1 边缘质量 |
 
 ## 引擎原理（segmenter.py）
 
@@ -74,3 +78,14 @@ pip install -r requirements.txt
 
 > 首次运行需先下载权重：`Project\weights\sam_vit_b_01ec64.pth`（约 375MB，来自
 > `https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth`）。
+
+## 评估（headless）
+
+`eval_click.py` 不需要 GUI，按「最大误差区域质心」策略自动点击，跑出 IoU-随-点击数曲线与
+NoC@80/85/90，并在收敛后报告**边界 IoU / F1**（`--edge-radius` 控制带宽，默认 2px），衡量
+抠图边缘与真值轮廓的贴合度——NoC 只能反映掩码内部收敛快慢，反映不了边缘精度。
+
+```bash
+python eval_click.py --image a.png --gt a_gt.png             # 空提示起步
+python eval_click.py --image a.png --gt a_gt.png --init-box   # 从真值 bbox 起步
+```

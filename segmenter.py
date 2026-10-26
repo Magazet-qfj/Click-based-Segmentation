@@ -30,6 +30,8 @@ hugging image edges — hair strands stay thin rather than blurring — instead 
 a uniform Gaussian blur.
 """
 
+import os
+
 import cv2
 import numpy as np
 
@@ -61,6 +63,10 @@ class SamSegmenter:
         """Build the SAM model + predictor once, on first use."""
         if self._predictor is not None:
             return
+        if not os.path.exists(self.checkpoint):
+            raise FileNotFoundError(
+                f"SAM 权重文件不存在：{self.checkpoint}\n"
+                f"请下载 sam_vit_b_01ec64.pth 放到 weights/ 目录（见 README）。")
         print("[SamSegmenter] loading SAM ViT-B ...")
         from segment_anything import sam_model_registry, SamPredictor
         sam = sam_model_registry['vit_b'](checkpoint=self.checkpoint)
@@ -72,8 +78,8 @@ class SamSegmenter:
     # ------------------------------------------------------------------ image
     def set_image(self, image):
         """Set the RGB image, encode it once, and clear all segmentation state."""
+        self._load_model()  # raises FileNotFoundError if the checkpoint is missing
         self.image = image
-        self._load_model()
 
         h, w = image.shape[:2]
         scale = min(1.0, self.max_side / max(h, w))

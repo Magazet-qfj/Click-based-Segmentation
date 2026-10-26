@@ -13,9 +13,16 @@ Usage:
     python eval_click.py --image a.png --gt a_gt.png
     python eval_click.py --image a.png --gt a_gt.png --init-box   # first prompt is a GT bbox
     python eval_click.py --image a.png --gt a_gt.png --max-side 640
+    python eval_click.py --image a.png --gt a_gt.png --edge-radius 3
 
 Ground-truth masks are 0/1 (anything >127 counts as foreground). For real
 numbers, supply masks from a benchmark (GrabCut / Berkeley / DAVIS).
+
+Besides NoC (how fast the mask interior converges), the final mask also reports
+Boundary IoU and F1 over a thin band around the two contours — edge quality,
+i.e. how precisely the cut-out edge tracks the object outline. NoC alone cannot
+capture that: two masks can reach 0.95 IoU yet have very different boundary
+fidelity.
 """
 
 import argparse
@@ -52,6 +59,27 @@ def _iou(a, b):
     inter = np.logical_and(a, b).sum()
     union = np.logical_or(a, b).sum()
     return float(inter) / float(union) if union else 0.0
+
+
+def _boundary_metrics(pred, gt, radius=2):
+    """Edge quality of the final mask: Boundary IoU and boundary F1 over a
+    ``radius``-wide band around the two mask contours (how closely the cut-out
+    edge tracks the ground-truth edge, independent of the mask interior)."""
+    pred_b = pred.astype(np.uint8)
+    gt_b = gt.astype(np.uint8)
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * radius + 1, 2 * radius + 1))
+    pred_bound = (cv2.dilate(pred_b, k) - cv2.erode(pred_b, k)) > 0
+    gt_bound = (cv2.dilate(gt_b, k) - cv2.erode(gt_b, k)) > 0
+    inter = int(np.logical_and(pred_bound, gt_bound).sum())
+    pred_sum = int(pred_bound.sum())
+    gt_sum = int(gt_bound.sum())
+    union = int(np.logical_or(pred_bound, gt_bound).sum())
+
+    biou = inter / union if union else 0.0
+    precision = inter / pred_sum if pred_sum else 0.0
+    recall = inter / gt_sum if gt_sum else 0.0
+    f1 = 2 * precision * recall / (precision + recall) if (precision + recall) else 0.0
+    return biou, f1
 
 
 def _largest_error_region(pred, gt):
@@ -122,6 +150,7 @@ def main():
     ap.add_argument('--max-clicks', type=int, default=20, help='Click budget per image.')
     ap.add_argument('--max-side', type=int, default=1024, help='Working-image longest side.')
     ap.add_argument('--init-box', action='store_true', help='Start from a GT-bbox prompt instead of empty.')
+    ap.add_argument('--edge-radius', type=int, default=2, help='Band half-width (px) for boundary IoU/F1.')
     args = ap.parse_args()
 
     if not args.checkpoint:
@@ -145,6 +174,11 @@ def main():
     print("\nNoC (interactions to reach threshold):")
     for th in (80, 85, 90):
         print(f"  @{th}%: {_noc(ious, th / 100.0)}")
+
+    pred = seg.result_mask
+    if pred is not None:
+        biou, bf1 = _boundary_metrics(pred, gt, radius=args.edge_radius)
+        print(f"\nEdge quality (band {args.edge_radius}px):  BoundaryIoU={biou:.4f}  F1={bf1:.4f}")
 
 
 if __name__ == '__main__':
