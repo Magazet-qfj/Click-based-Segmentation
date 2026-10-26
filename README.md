@@ -66,10 +66,10 @@ pip install -r requirements.txt
 1. 加载图像后，`SamPredictor.set_image` 用 ViT 把整幅图编码成特征（每张图只做一次，是慢步骤）；
 2. 每次点击把"前景/背景"点作为提示，喂给轻量掩码解码器（毫秒级）；
 3. 前景点 label=1、背景点 label=0，一次调用输出一张二值掩码；
-4. 结果放大回原分辨率并做轻量羽化，得到 `result_mask`（二值）与 `result_alpha`（软边抠图）。
+4. 结果放大回原分辨率，并用边缘感知的 guided filter 羽化（`edge_mode='guided'`，可切回 `'gaussian'`），得到 `result_mask`（二值）与 `result_alpha`（软边抠图）。
 
 点击越多（前景 + 背景配合），SAM 的定位越准。为兼顾大图与 CPU 实时响应，图像编码会在把最长边
-缩到 640 像素的工作图上进行，最后把掩码放大回原分辨率（`max_side` 可调）。SAM 掩码天然具备空间
+缩到 1024 像素的工作图上进行，最后把掩码放大回原分辨率（`max_side` 可调）。SAM 掩码天然具备空间
 连通性，且不会因新增点击而整体重算、删掉已选区域——这解决了初版 GrabCut 的两个主要问题。
 
 > 首次运行需先下载权重：`Project\weights\sam_vit_b_01ec64.pth`（约 375MB，来自
