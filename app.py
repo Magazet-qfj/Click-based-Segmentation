@@ -4,6 +4,7 @@ The window guides the user step by step: load an image, click the foreground
 target, optionally click background to exclude regions, then save the result.
 """
 
+import logging
 import os
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
@@ -13,6 +14,8 @@ import numpy as np
 
 from canvas import CanvasImage
 from controller import InteractiveController
+
+log = logging.getLogger(__name__)
 
 
 def _imread_unicode(path):
@@ -237,11 +240,14 @@ class InteractiveDemoApp(ttk.Frame):
             self._load_image_from_path(filename)
 
     def _load_image_from_path(self, path):
+        log.info("加载图片：%s", path)
         image = _imread_unicode(path)
         if image is None:
+            log.error("无法读取图片：%s", path)
             messagebox.showerror("错误", f"无法读取图片：{path}")
             return
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        log.info("图片解码完成：%dx%d", image.shape[1], image.shape[0])
 
         # CPU 上图像编码要几秒，先给提示再阻塞，避免误以为卡死。
         self._set_busy("正在编码图像...")
@@ -268,6 +274,7 @@ class InteractiveDemoApp(ttk.Frame):
             parent=self.master, initialfile='mask.png', defaultextension='.png',
             filetypes=[("PNG", "*.png"), ("BMP", "*.bmp"), ("所有文件", "*.*")])
         if filename:
+            log.info("保存掩码到 %s", filename)
             _imwrite_unicode(filename, mask * 255)
 
     def _save_foreground_callback(self):
@@ -286,6 +293,7 @@ class InteractiveDemoApp(ttk.Frame):
             parent=self.master, initialfile='foreground.png', defaultextension='.png',
             filetypes=[("PNG", "*.png"), ("所有文件", "*.*")])
         if filename:
+            log.info("保存前景抠图到 %s", filename)
             rgba = np.dstack([image, alpha])
             _imwrite_unicode(filename, cv2.cvtColor(rgba, cv2.COLOR_RGBA2BGRA))
 

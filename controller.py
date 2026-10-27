@@ -4,7 +4,11 @@ The controller owns the image + segmenter state and re-runs segmentation on
 every mutation (add/undo/reset click), then asks the UI to redraw.
 """
 
+import logging
+
 from visuals import draw_with_blend_and_clicks
+
+log = logging.getLogger(__name__)
 
 
 class InteractiveController:
@@ -47,12 +51,15 @@ class InteractiveController:
 
     def set_edge_mode(self, mode):
         self.segmenter.edge_mode = mode
+        log.info("边缘羽化方式改为 %s", mode)
 
     def set_refine_mode(self, mode):
         self.segmenter.refine_mode = mode
+        log.info("边界精修改为 %s", mode)
 
     def set_cleanup_kernel(self, k):
         self.segmenter.cleanup_kernel = k
+        log.info("掩码清理核改为 %d", k)
 
     def resegment(self):
         self.segmenter.run()

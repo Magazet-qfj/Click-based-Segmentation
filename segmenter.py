@@ -30,10 +30,14 @@ hugging image edges — hair strands stay thin rather than blurring — instead 
 a uniform Gaussian blur.
 """
 
+import logging
 import os
+import time
 
 import cv2
 import numpy as np
+
+log = logging.getLogger(__name__)
 
 
 class SamSegmenter:
@@ -47,7 +51,7 @@ class SamSegmenter:
         self.model_type = model_type   # 'vit_b' or 'vit_l' (sam_model_registry key)
         self.max_side = max_side       # cap the working image at this longest side (SAM native = 1024)
         self.device = device
-        self.cleanup_kernel = cleanup_kernel  # median/close kernel for artifact cleanup
+        self.cleanup_kernel = cleanup_kernel  # close kernel for hole-filling (median fixed at 3)
         self.edge_mode = edge_mode     # 'guided' (edge-aware) or 'gaussian' (uniform blur)
         self.edge_radius = edge_radius # guided-filter window radius at full resolution
         self.edge_eps = edge_eps       # guided-filter regularizer (for 0..1 guide/src)
@@ -65,7 +69,7 @@ class SamSegmenter:
         self._box = None              # (x1, y1, x2, y2) in ORIGINAL image coordinates
         self._soft_mask = None        # soft (0..1 float) mask at original resolution
         self._matte = None            # cached true alpha matte (0..1 float) at full res
-        self.matte_radius = 10        # trimap unknown-band half-width (px, at matting res)
+        self.matte_radius = 25        # trimap unknown-band half-width, in FULL-res px (scaled down to the solve res)
         self.matte_max_side = 512     # resolution cap for the closed-form matting solve
 
     # ------------------------------------------------------------------ model
@@ -77,13 +81,14 @@ class SamSegmenter:
             raise FileNotFoundError(
                 f"SAM 权重文件不存在：{self.checkpoint}\n"
                 f"请下载 {os.path.basename(self.checkpoint)} 放到 weights/ 目录（见 README）。")
-        print(f"[SamSegmenter] loading SAM {self.model_type.upper()} ...")
+        log.info("加载 SAM 模型 %s（%s）...", self.model_type.upper(), os.path.basename(self.checkpoint))
+        t0 = time.time()
         from segment_anything import sam_model_registry, SamPredictor
         sam = sam_model_registry[self.model_type](checkpoint=self.checkpoint)
         sam.to(self.device)
         sam.eval()
         self._predictor = SamPredictor(sam)
-        print("[SamSegmenter] model ready.")
+        log.info("SAM 模型就绪（%.1fs）", time.time() - t0)
 
     # ------------------------------------------------------------------ image
     def set_image(self, image):
@@ -94,14 +99,19 @@ class SamSegmenter:
         h, w = image.shape[:2]
         scale = min(1.0, self.max_side / max(h, w))
         self._scale = scale
+        log.info("设置图像 %dx%d（最长边上限 %d）", w, h, self.max_side)
         if scale < 1.0:
             self._work_image = cv2.resize(
                 image, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA
             )
+            log.info("降采样到工作图 %dx%d（scale=%.3f）",
+                     self._work_image.shape[1], self._work_image.shape[0], scale)
         else:
             self._work_image = image
 
+        t0 = time.time()
         self._predictor.set_image(self._work_image)  # the slow step (image encode)
+        log.info("图像编码完成：%.1fs", time.time() - t0)
         self._pos_clicks = []
         self._neg_clicks = []
         self._box = None
@@ -109,6 +119,7 @@ class SamSegmenter:
 
     # ----------------------------------------------------------------- clicks
     def add_click(self, x, y, is_positive):
+        log.info("添加%s点 (%d, %d)", "前景" if is_positive else "背景", int(x), int(y))
         if is_positive:
             self._pos_clicks.append((x, y))
         else:
@@ -116,12 +127,14 @@ class SamSegmenter:
 
     def undo_click(self):
         # Undo the most recent click (negative clicks are undone first).
+        log.info("撤销上一次点击")
         if self._neg_clicks:
             self._neg_clicks.pop()
         elif self._pos_clicks:
             self._pos_clicks.pop()
 
     def reset(self):
+        log.info("清空所有点击")
         self._pos_clicks = []
         self._neg_clicks = []
         self._box = None
@@ -131,7 +144,9 @@ class SamSegmenter:
     # ------------------------------------------------------------------- box
     def set_box(self, x1, y1, x2, y2):
         """Set a bounding-box prompt (XYXY, in ORIGINAL image coordinates)."""
-        self._box = (min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2))
+        x1, y1, x2, y2 = (min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2))
+        log.info("设置框提示 (%d,%d)-(%d,%d)", int(x1), int(y1), int(x2), int(y2))
+        self._box = (x1, y1, x2, y2)
 
     def clear_box(self):
         self._box = None
@@ -146,11 +161,17 @@ class SamSegmenter:
             self._soft_mask = np.zeros(self.image.shape[:2], dtype=np.float32)
             return self.result_mask
 
+        t0 = time.time()
         soft = self._run_coarse()
         if self.refine_mode == 'grabcut':
             soft = self.refine_boundary((soft >= 0.5).astype(np.uint8)).astype(np.float32)
         self._soft_mask = self._feather(soft)
         self._matte = None
+        cov = float(self._soft_mask.mean()) * 100.0
+        log.info("分割完成: %.0fms | 前景 %.1f%% | %d 前景点 / %d 背景点%s",
+                 (time.time() - t0) * 1000.0, cov,
+                 len(self._pos_clicks), len(self._neg_clicks),
+                 " + 框" if self._box is not None else "")
         return self.result_mask
 
     def _build_prompts(self, offset_x, offset_y, scale):
@@ -255,19 +276,22 @@ class SamSegmenter:
 
         The mask decoder's transposed-convolution upsampling can leave a faint
         checkerboard in smooth, same-coloured regions, plus occasional tiny
-        holes. A median filter kills the alternating checkerboard / salt-and-
-        pepper noise, then a morphological close fills remaining small holes and
-        bridges thin gaps. Both run at the small working resolution, where these
-        artifacts are only a few pixels wide and cheap to remove.
+        holes. A *small* median filter (3px) kills the alternating checkerboard /
+        salt-and-pepper noise, then a morphological close fills remaining small
+        holes and bridges thin gaps.
 
-        The kernel size is ``self.cleanup_kernel`` (odd); raise it if a coarser
-        grid remains, lower it to preserve very fine structures.
+        The median is fixed at 3px on purpose: the checkerboard is a 1-2px
+        high-frequency pattern, and a larger median (e.g. 9px) also erases
+        *genuine* small round foreground details (spots, buttons, highlights),
+        turning them into unexpected background holes. The close kernel is
+        ``self.cleanup_kernel`` (odd); raise it to fill bigger holes, lower it to
+        preserve very fine structures.
         """
         m = mask.astype(np.uint8)
+        m = cv2.medianBlur(m, 3)
         k = self.cleanup_kernel
         if k % 2 == 0:
             k += 1
-        m = cv2.medianBlur(m, k)
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
         return cv2.morphologyEx(m, cv2.MORPH_CLOSE, kernel)
 
@@ -340,14 +364,28 @@ class SamSegmenter:
         semi-transparent pixels at the boundary, so wispy hair blends with the
         background instead of snapping to 0/1. Cached until the next click. Costs
         a sparse linear solve (seconds), so call it at export, not per click.
+
+        ``matte_radius`` is the trimap's unknown-band half-width in *full-res*
+        pixels. SAM's coarse boundary swallows the light gaps between dark hair
+        strands; matting can recover those gaps only if the unknown band is wide
+        enough to span the whole fringe. That fringe depth is ~constant in
+        full-res pixels regardless of image size, so the radius is scaled down by
+        ``scale`` before the solve (which runs at ``matte_max_side``), keeping the
+        recovery resolution-independent.
         """
         if self._matte is None:
             if self.image is None or self._soft_mask is None:
                 return None
             from matting import estimate_alpha
+            h, w = self.image.shape[:2]
+            scale = min(1.0, self.matte_max_side / max(h, w))
+            radius_solve = max(1, int(round(self.matte_radius * scale)))
+            t0 = time.time()
             self._matte = estimate_alpha(
                 self.image, self.result_mask,
-                trimap_radius=self.matte_radius, max_side=self.matte_max_side)
+                trimap_radius=radius_solve, max_side=self.matte_max_side)
+            log.info("闭式 alpha matting 求解完成（trimap 半径 %dpx，%.1fs）",
+                     radius_solve, time.time() - t0)
         return self._matte
 
     @property
