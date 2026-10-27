@@ -117,6 +117,22 @@ class SamSegmenter:
         self._box = None
         self._soft_mask = None
 
+    def reencode(self):
+        """Re-encode the current image after ``max_side`` changed.
+
+        ``set_image`` clears the clicks/box, but they live in original-image
+        coordinates, so they survive a resolution change unchanged — restore them.
+        """
+        if self.image is None:
+            return
+        pos = list(self._pos_clicks)
+        neg = list(self._neg_clicks)
+        box = self._box
+        self.set_image(self.image)
+        self._pos_clicks = pos
+        self._neg_clicks = neg
+        self._box = box
+
     # ----------------------------------------------------------------- clicks
     def add_click(self, x, y, is_positive):
         log.info("添加%s点 (%d, %d)", "前景" if is_positive else "背景", int(x), int(y))

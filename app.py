@@ -14,6 +14,7 @@ import numpy as np
 
 from canvas import CanvasImage
 from controller import InteractiveController
+from settings import SettingsDialog
 
 log = logging.getLogger(__name__)
 
@@ -81,6 +82,10 @@ class InteractiveDemoApp(ttk.Frame):
         edit_menu.add_command(label="清空所有点击", command=self._reset)
         edit_menu.add_command(label="重新分割", command=self._resegment)
         bar.add_cascade(label="编辑", menu=edit_menu)
+
+        settings_menu = tk.Menu(bar, tearoff=0)
+        settings_menu.add_command(label="参数设置...", command=self._open_settings)
+        bar.add_cascade(label="设置", menu=settings_menu)
         self.master.config(menu=bar)
 
     def _build_toolbar(self):
@@ -366,6 +371,78 @@ class InteractiveDemoApp(ttk.Frame):
         self.controller.reset()
 
     def _resegment(self):
+        self.controller.resegment()
+
+    # --------------------------------------------------------------- settings
+    def _open_settings(self):
+        dialog = SettingsDialog(self.master, self._collect_settings())
+        self.master.wait_window(dialog)
+        if dialog.result:
+            self._apply_settings(dialog.result)
+
+    def _collect_settings(self):
+        s = self.controller.segmenter
+        return {
+            'alpha_blend': self.alpha_blend.get(),
+            'click_radius': self.click_radius.get(),
+            'cleanup_kernel': self.cleanup_kernel.get(),
+            'edge_mode': self.edge_mode.get(),
+            'edge_radius': s.edge_radius,
+            'edge_eps': s.edge_eps,
+            'refine': s.refine_mode == 'grabcut',
+            'grabcut_iters': s.grabcut_iters,
+            'grabcut_max_side': s.grabcut_max_side,
+            'grabcut_band': s.grabcut_band,
+            'matte': self.matte_var.get(),
+            'matte_radius': s.matte_radius,
+            'matte_max_side': s.matte_max_side,
+            'model_type': s.model_type,
+            'max_side': s.max_side,
+        }
+
+    def _apply_settings(self, values):
+        s = self.controller.segmenter
+        max_side_changed = int(values['max_side']) != int(s.max_side)
+
+        # 同步右侧面板的快速控件（设置对话框是它们的超集）。
+        self.alpha_blend.set(values['alpha_blend'])
+        self.click_radius.set(values['click_radius'])
+        self.edge_mode.set(values['edge_mode'])
+        self.matte_var.set(values['matte'])
+        self.refine_var.set(values['refine'])
+
+        # 引擎参数（清理核强制奇数，与右侧滑块一致）。
+        k = int(values['cleanup_kernel'])
+        if k % 2 == 0:
+            k += 1
+        self.cleanup_kernel.set(k)
+        s.cleanup_kernel = k
+        s.edge_mode = values['edge_mode']
+        s.edge_radius = int(values['edge_radius'])
+        s.edge_eps = float(values['edge_eps'])
+        s.refine_mode = 'grabcut' if values['refine'] else 'off'
+        s.grabcut_iters = int(values['grabcut_iters'])
+        s.grabcut_max_side = int(values['grabcut_max_side'])
+        s.grabcut_band = int(values['grabcut_band'])
+        s.matte_radius = int(values['matte_radius'])
+        s.matte_max_side = int(values['matte_max_side'])
+        s.max_side = int(values['max_side'])
+        s._matte = None  # 参数已变，作废缓存的 alpha matte
+
+        if self.controller.image is None:
+            self._update_instruction()
+            return
+
+        if max_side_changed:
+            # 最长边变了需重跑 ViT 编码（几秒）；点击/框按原图坐标保留。
+            self._set_busy("正在重新编码图像...")
+            try:
+                s.reencode()
+            except Exception as e:
+                self._set_idle()
+                messagebox.showerror("设置应用失败", f"重新编码失败：{e}")
+                return
+            self._set_idle()
         self.controller.resegment()
 
     def _on_edge_mode_changed(self, event=None):
