@@ -32,6 +32,9 @@ class CanvasImage:
         self._box_rect_id = None     # canvas id of the in-progress rubber band
         self._box_moved = False
 
+        self._delete_callback = None
+        self.delete_mode = False     # when on, a plain left-click deletes a marker
+
         self.canvas.bind('<ButtonPress-1>', self._on_left_press)
         self.canvas.bind('<B1-Motion>', self._on_left_drag)
         self.canvas.bind('<ButtonRelease-1>', self._on_left_release)
@@ -50,6 +53,15 @@ class CanvasImage:
     def register_box_callback(self, callback):
         """callback(x1, y1, x2, y2) receives image-space XYXY box coordinates."""
         self._box_callback = callback
+
+    def register_delete_callback(self, callback):
+        """callback(x, y) receives image-space coords of a delete-mode click."""
+        self._delete_callback = callback
+
+    def set_delete_mode(self, enabled):
+        """Toggle marker-delete mode; also swaps the cursor for visual feedback."""
+        self.delete_mode = enabled
+        self.canvas.config(cursor='X_cursor' if enabled else 'crosshair')
 
     # -------------------------------------------------------------- rendering
     def set_image(self, image, fit=True):
@@ -115,6 +127,8 @@ class CanvasImage:
         dy = event.y - self._box_anchor[1]
         if abs(dx) > 3 or abs(dy) > 3:
             self._box_moved = True
+        if self.delete_mode:
+            return  # no rubber-band box while deleting markers
         if not self._box_moved:
             return
         x0, y0 = self._box_anchor
@@ -143,7 +157,14 @@ class CanvasImage:
                     self._box_callback(min(x1, x2), min(y1, y2),
                                        max(x1, x2), max(y1, y2))
             return
-        # plain click (no meaningful drag) -> foreground point.
+        # plain click (no meaningful drag).
+        if self.delete_mode:
+            # Delete mode: a plain click removes the marker under the cursor
+            # (the app hit-tests and ignores the click if nothing is there).
+            if not self._box_moved and self._delete_callback is not None and start is not None:
+                self._delete_callback(start[0], start[1])
+            return
+        # Normal mode: a plain click adds a foreground point.
         if self._click_callback is not None and start is not None:
             self._click_callback(is_positive=True, x=start[0], y=start[1])
 

@@ -133,6 +133,13 @@ class SamSegmenter:
         elif self._pos_clicks:
             self._pos_clicks.pop()
 
+    def remove_click(self, index, is_positive):
+        """Remove a specific click by its index in the foreground/background list."""
+        lst = self._pos_clicks if is_positive else self._neg_clicks
+        if 0 <= index < len(lst):
+            x, y = lst.pop(index)
+            log.info("删除%s点 (%d, %d)", "前景" if is_positive else "背景", int(x), int(y))
+
     def reset(self):
         log.info("清空所有点击")
         self._pos_clicks = []

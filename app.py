@@ -51,11 +51,13 @@ class InteractiveDemoApp(ttk.Frame):
         self.cleanup_kernel = tk.IntVar(value=segmenter.cleanup_kernel)
         self.matte_var = tk.BooleanVar(value=False)
         self.refine_var = tk.BooleanVar(value=(segmenter.refine_mode == 'grabcut'))
+        self.delete_mode = tk.BooleanVar(value=False)
 
         self._build_menu()
         self._build_layout()
         self.image_on_canvas.register_click_callback(self._click_callback)
         self.image_on_canvas.register_box_callback(self._box_callback)
+        self.image_on_canvas.register_delete_callback(self._delete_callback)
         self._bind_shortcuts()
 
         if initial_image:
@@ -132,6 +134,12 @@ class InteractiveDemoApp(ttk.Frame):
             row=1, column=0, sticky='ew', padx=6, pady=3)
         ttk.Button(clicks_frame, text="重新分割", command=self._resegment).grid(
             row=2, column=0, sticky='ew', padx=6, pady=3)
+        ttk.Checkbutton(clicks_frame, text="删除标记点（点选要删的点）",
+                        variable=self.delete_mode, command=self._on_delete_mode_changed).grid(
+            row=3, column=0, sticky='w', padx=6, pady=3)
+        tk.Label(clicks_frame, text="勾选后，左键点击标记点即可删除该点",
+                 justify='left', anchor='w', font=('Microsoft YaHei', 8), fg='#888').grid(
+            row=4, column=0, sticky='ew', padx=6, pady=(0, 3))
 
         export_frame = ttk.LabelFrame(ctrl, text="导出")
         export_frame.grid(row=3, column=0, sticky='ew', pady=4)
@@ -165,7 +173,7 @@ class InteractiveDemoApp(ttk.Frame):
         tk.Label(edge_frame, text="guided = 边缘感知 · gaussian = 均匀模糊",
                  justify='left', anchor='w', font=('Microsoft YaHei', 8), fg='#888').grid(
             row=1, column=0, sticky='ew', padx=6, pady=(0, 3))
-        ttk.Checkbutton(edge_frame, text="GrabCut 全分辨率边界精修（更细，慢约几秒）",
+        ttk.Checkbutton(edge_frame, text="GrabCut 全分辨率边界精修",
                         variable=self.refine_var, command=self._on_refine_changed).grid(
             row=2, column=0, sticky='w', padx=6, pady=(2, 3))
 
@@ -184,6 +192,7 @@ class InteractiveDemoApp(ttk.Frame):
                      "左键点击 = 标记前景，左键拖拽 = 框选目标\n"
                      "右键点击 = 标记背景\n"
                      "中键拖动 = 平移，滚轮 = 缩放\n"
+                     "勾选「删除标记点」后点击标记 = 删除该点\n"
                      "Ctrl + O 打开, Ctrl + S 保存掩码\n"
                      "Ctrl + Shift + S 保存抠图, Ctrl + Z 撤销, Esc 清空")
         tk.Label(ctrl, text=help_text, justify='left', anchor='w',
@@ -309,6 +318,21 @@ class InteractiveDemoApp(ttk.Frame):
             return
         self.controller.set_box(x1, y1, x2, y2)
 
+    def _delete_callback(self, x, y):
+        if self.controller.image is None:
+            return
+        # Hit-test in image space, but with a ~12px *on-screen* radius so a
+        # marker is easy to hit regardless of zoom (and at least the marker size).
+        scale = self.image_on_canvas.scale or 1.0
+        radius = max(self.click_radius.get() + 2.0, 12.0 / scale)
+        hit = self.controller.find_click(x, y, radius)
+        if hit:
+            is_positive, index = hit
+            self.controller.remove_click(is_positive, index)
+            self.statusbar.config(text="就绪")
+        else:
+            self.statusbar.config(text="未点中标记点（绿=前景，红=背景）")
+
     def _undo_click(self):
         self.controller.undo_click()
 
@@ -325,6 +349,10 @@ class InteractiveDemoApp(ttk.Frame):
     def _on_refine_changed(self):
         self.controller.set_refine_mode('grabcut' if self.refine_var.get() else 'off')
         self.controller.resegment()
+
+    def _on_delete_mode_changed(self):
+        self.image_on_canvas.set_delete_mode(self.delete_mode.get())
+        self._update_instruction()
 
     def _set_cleanup(self, value):
         k = int(round(float(value)))
@@ -354,6 +382,11 @@ class InteractiveDemoApp(ttk.Frame):
 
         npos, nneg = self.controller.click_counts()
         self.status.config(text=f"前景 {npos} 点 · 背景 {nneg} 点")
+
+        if self.delete_mode.get():
+            self.instruction.config(
+                text="删除模式：点击要删除的标记点（绿=前景，红=背景）", bg='#f8d7da')
+            return
 
         if npos == 0:
             self.instruction.config(

@@ -34,6 +34,25 @@ class InteractiveController:
         self.segmenter.run()
         self.update_image_callback()
 
+    def remove_click(self, is_positive, index):
+        self.segmenter.remove_click(index, is_positive)
+        self.segmenter.run()
+        self.update_image_callback()
+
+    def find_click(self, x, y, radius):
+        """Return ``(is_positive, index)`` of the nearest marker within ``radius``
+        pixels (image space), or ``None``. On a tie the foreground marker wins."""
+        best = None
+        best_d2 = None
+        pos, neg = self.segmenter.clicks
+        for is_pos, lst in ((True, pos), (False, neg)):
+            for i, (cx, cy) in enumerate(lst):
+                d2 = (cx - x) ** 2 + (cy - y) ** 2
+                if d2 <= radius * radius and (best_d2 is None or d2 < best_d2):
+                    best = (is_pos, i)
+                    best_d2 = d2
+        return best
+
     def reset(self):
         self.segmenter.reset()
         self.update_image_callback()
