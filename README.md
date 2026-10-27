@@ -24,6 +24,8 @@ python main.py --model-type vit_l   # 换 ViT-L 编码器（需先下 1.25GB 权
 
 > `run.bat` 优先使用 `SimpleClick\simpleclick_env` 里的 Python；找不到时退回系统 `python`。
 > 若不想要启动时的黑色控制台窗口，可把 `run.bat` 里的 `python.exe` 改成 `pythonw.exe`。
+> 启动后黑色控制台会**实时打印调试信息**（加载图片、每次前景/背景点击、图像编码耗时、分割耗时与前景占比、
+> 导出等），方便观察程序每一步做了什么。
 
 依赖为 `opencv-python`、`numpy`、`Pillow`、`segment-anything`（Tkinter 是 Python 标准库；
 `torch`/`torchvision` 由 `SimpleClick\simpleclick_env` 提供）：
@@ -59,9 +61,11 @@ pip install -r requirements.txt
 5. 满意后从「文件」菜单保存**掩码**（二值图）或**前景抠图**（透明背景 PNG）。
 
 右侧控制面板还可调「边缘羽化方式」（`guided` 边缘感知 / `gaussian` 均匀模糊）、「掩码清理强度」
-（越小越保留发丝等细丝，越大越去除伪影）与「GrabCut 全分辨率边界精修」（可选，个别图更细、慢约几秒，
-实测对 guided filter 边际增益中性）。导出时可勾选「抠图用真 alpha matting」——用闭式
-matting（发丝级，半透明发丝会与背景自然融合）替代 guided filter 羽化，导出前会多花几秒求解。
+（越大填越多网格空洞；中值固定 3px，不再误抹小圆斑点）、「GrabCut 全分辨率边界精修」（可选，个别图更细、
+慢约几秒，实测对 guided filter 边际增益中性）。导出时可勾选「抠图用真 alpha matting」——用闭式
+matting（发丝级，半透明发丝会与背景自然融合）替代 guided filter 羽化，导出前会多花几秒求解；
+其 trimap 未知带半径按全分辨率像素自适应缩放（默认 25px），足以覆盖一段发丝边缘、把发丝间的浅色背景
+还原出来。
 
 ## 代码结构
 
