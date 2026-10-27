@@ -1,12 +1,15 @@
 """A zoomable, pannable Tk canvas that reports clicks in image pixel coordinates.
 
-The left mouse button follows the active tool (set via ``set_tool``):
-    - 'foreground' brush  -> left click adds a foreground point
-    - 'background' brush  -> left click adds a background point
+Both mouse buttons follow the active tool (set via ``set_tool``):
+    - 'foreground' brush  -> left click adds a foreground point; right click
+                             deletes the foreground point under the cursor
+    - 'background' brush  -> left click adds a background point; right click
+                             deletes the background point under the cursor
     - 'box' tool          -> left drag draws a bounding box
     - 'delete' tool       -> left click deletes the marker under the cursor
+                             (foreground or background); left drag deletes every
+                             marker inside the box
 Universal (tool-independent) gestures:
-    - quick right click   -> negative (background) point
     - middle-button drag  -> pan
     - mouse wheel         -> zoom (keeps the point under the cursor fixed)
 """
@@ -37,6 +40,7 @@ class CanvasImage:
         self._box_moved = False
 
         self._delete_callback = None
+        self._delete_box_callback = None
         self.tool = 'foreground'     # active tool: foreground | background | box | delete
 
         self.canvas.bind('<ButtonPress-1>', self._on_left_press)
@@ -59,8 +63,15 @@ class CanvasImage:
         self._box_callback = callback
 
     def register_delete_callback(self, callback):
-        """callback(x, y) receives image-space coords of a delete-mode click."""
+        """callback(x, y, is_positive) receives image-space coords of a delete
+        click; ``is_positive`` is True/False to delete only that type, or None
+        to delete whichever marker is nearest."""
         self._delete_callback = callback
+
+    def register_delete_box_callback(self, callback):
+        """callback(x1, y1, x2, y2) receives image-space XYXY box; every marker
+        inside it is removed."""
+        self._delete_box_callback = callback
 
     def set_tool(self, tool):
         """Switch the active tool and swap the cursor for visual feedback."""
@@ -114,8 +125,6 @@ class CanvasImage:
 
     # ----------------------------------------------------------- mouse events
     def _on_left_press(self, event):
-        if self._click_callback is None and self._box_callback is None:
-            return
         coords = self._to_image_coords(event)
         if coords is None:
             return
@@ -131,15 +140,16 @@ class CanvasImage:
         dy = event.y - self._box_anchor[1]
         if abs(dx) > 3 or abs(dy) > 3:
             self._box_moved = True
-        if self.tool != 'box':
-            return  # only the box tool draws a rubber band
+        if self.tool not in ('box', 'delete'):
+            return  # only the box and delete tools draw a rubber band
         if not self._box_moved:
             return
         x0, y0 = self._box_anchor
         if self._box_rect_id is not None:
             self.canvas.delete(self._box_rect_id)
+        outline = '#ff3333' if self.tool == 'box' else '#3366ff'
         self._box_rect_id = self.canvas.create_rectangle(
-            x0, y0, event.x, event.y, outline='#ff3333', width=2)
+            x0, y0, event.x, event.y, outline=outline, width=2)
 
     def _on_left_release(self, event):
         if self._box_anchor is None:
@@ -164,10 +174,18 @@ class CanvasImage:
                                            max(x1, x2), max(y1, y2))
             return
         if tool == 'delete':
-            # Delete tool: a plain click removes the marker under the cursor
-            # (the app hit-tests and ignores the click if nothing is there).
-            if not self._box_moved and self._delete_callback is not None and start is not None:
-                self._delete_callback(start[0], start[1])
+            if self._box_moved:
+                # Drag: delete every marker inside the box.
+                end = self._to_image_coords(event)
+                if end is not None and self._delete_box_callback is not None:
+                    x1, y1 = start
+                    x2, y2 = end
+                    if abs(x2 - x1) >= 3 and abs(y2 - y1) >= 3:
+                        self._delete_box_callback(min(x1, x2), min(y1, y2),
+                                                  max(x1, x2), max(y1, y2))
+            elif self._delete_callback is not None and start is not None:
+                # Plain click: delete the marker under the cursor (any type).
+                self._delete_callback(start[0], start[1], None)
             return
         # Foreground/background brush: a plain click adds a point of that type.
         if not self._box_moved and self._click_callback is not None and start is not None:
@@ -194,8 +212,8 @@ class CanvasImage:
         self._right_press_time = event.time / 1000.0
 
     def _on_right_drag(self, event):
-        # Right-drag no longer pans; only track movement so a dragged right-click
-        # does not accidentally register as a negative point.
+        # Right-drag does not pan; only track movement so a dragged right-click
+        # does not accidentally register as a delete action.
         if self._right_start is None:
             return
         if abs(event.x - self._right_start[0]) > 3 or abs(event.y - self._right_start[1]) > 3:
@@ -203,10 +221,13 @@ class CanvasImage:
 
     def _on_right_release(self, event):
         dt = event.time / 1000.0 - self._right_press_time
-        if not self._right_moved and dt < 0.4 and self._click_callback is not None:
+        if not self._right_moved and dt < 0.4:
             coords = self._to_image_coords(event)
-            if coords:
-                self._click_callback(is_positive=False, x=coords[0], y=coords[1])
+            if coords and self.tool in ('foreground', 'background'):
+                # Right-click in a brush tool deletes a point of that same type.
+                if self._delete_callback is not None:
+                    self._delete_callback(coords[0], coords[1],
+                                          self.tool == 'foreground')
         self._right_start = None
 
     def _on_wheel(self, event):

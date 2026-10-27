@@ -58,6 +58,7 @@ class InteractiveDemoApp(ttk.Frame):
         self.image_on_canvas.register_click_callback(self._click_callback)
         self.image_on_canvas.register_box_callback(self._box_callback)
         self.image_on_canvas.register_delete_callback(self._delete_callback)
+        self.image_on_canvas.register_delete_box_callback(self._delete_box_callback)
         self._bind_shortcuts()
 
         if initial_image:
@@ -96,7 +97,7 @@ class InteractiveDemoApp(ttk.Frame):
                            indicatoron=False, command=self._on_tool_changed,
                            width=8, anchor='w').grid(
                 row=i, column=0, sticky='ew', padx=6, pady=3)
-        tk.Label(toolbar, text="右键 = 背景\n中键拖动 = 平移\n滚轮 = 缩放",
+        tk.Label(toolbar, text="中键拖动 = 平移\n滚轮 = 缩放",
                  justify='left', anchor='w', font=('Microsoft YaHei', 8), fg='#888').grid(
             row=len(tools), column=0, sticky='ew', padx=6, pady=(8, 3))
 
@@ -205,8 +206,8 @@ class InteractiveDemoApp(ttk.Frame):
 
         help_text = ("操作说明：\n"
                      "左侧工具栏切换工具：前景/背景/框选/删除\n"
-                     "左键点击 = 按当前工具操作\n"
-                     "右键点击 = 标记背景\n"
+                     "前景/背景画笔：左键加点，右键删同类点\n"
+                     "删除工具：左键点删，左键拖拽框选批量删\n"
                      "中键拖动 = 平移，滚轮 = 缩放\n"
                      "Ctrl + O 打开, Ctrl + S 保存掩码\n"
                      "Ctrl + Shift + S 保存抠图, Ctrl + Z 撤销, Esc 清空")
@@ -333,20 +334,30 @@ class InteractiveDemoApp(ttk.Frame):
             return
         self.controller.set_box(x1, y1, x2, y2)
 
-    def _delete_callback(self, x, y):
+    def _delete_callback(self, x, y, is_positive=None):
         if self.controller.image is None:
             return
         # Hit-test in image space, but with a ~12px *on-screen* radius so a
         # marker is easy to hit regardless of zoom (and at least the marker size).
         scale = self.image_on_canvas.scale or 1.0
         radius = max(self.click_radius.get() + 2.0, 12.0 / scale)
-        hit = self.controller.find_click(x, y, radius)
+        hit = self.controller.find_click(x, y, radius, is_positive)
         if hit:
-            is_positive, index = hit
-            self.controller.remove_click(is_positive, index)
+            ipos, index = hit
+            self.controller.remove_click(ipos, index)
             self.statusbar.config(text="就绪")
-        else:
+        elif is_positive is None:
             self.statusbar.config(text="未点中标记点（绿=前景，红=背景）")
+        elif is_positive:
+            self.statusbar.config(text="未点中前景标记点")
+        else:
+            self.statusbar.config(text="未点中背景标记点")
+
+    def _delete_box_callback(self, x1, y1, x2, y2):
+        if self.controller.image is None:
+            return
+        n = self.controller.remove_clicks_in_box(x1, y1, x2, y2)
+        self.statusbar.config(text=f"已删除 {n} 个标记点" if n else "框内无标记点")
 
     def _undo_click(self):
         self.controller.undo_click()
@@ -401,7 +412,7 @@ class InteractiveDemoApp(ttk.Frame):
         tool = self.tool.get()
         if tool == 'delete':
             self.instruction.config(
-                text="删除工具：点击要删除的标记点（绿=前景，红=背景）", bg='#f8d7da')
+                text="删除工具：左键点删标记点，左键拖拽框选批量删除", bg='#f8d7da')
             return
         if tool == 'box':
             self.instruction.config(
@@ -409,15 +420,15 @@ class InteractiveDemoApp(ttk.Frame):
             return
         if tool == 'background':
             self.instruction.config(
-                text="背景画笔：左键点击标记背景（排除区域）", bg='#fff3cd')
+                text="背景画笔：左键添加背景点，右键删除背景点", bg='#fff3cd')
             return
 
         if npos == 0:
             self.instruction.config(
-                text="请在目标上左键点击 1~3 个点，或左键拖拽框出目标", bg='#fff3cd')
+                text="前景画笔：左键添加前景点，右键删除前景点", bg='#fff3cd')
         elif nneg == 0:
             self.instruction.config(
-                text="已标记前景。可右键点击背景排除误选，或继续左键补充前景", bg='#d9ead3')
+                text="已标记前景。可继续左键补充前景，或切到背景画笔排除误选", bg='#d9ead3')
         else:
             self.instruction.config(
                 text="分割已就绪。继续点击可微调，或从「文件」菜单保存结果", bg='#d9ead3')

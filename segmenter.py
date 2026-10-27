@@ -140,6 +140,20 @@ class SamSegmenter:
             x, y = lst.pop(index)
             log.info("删除%s点 (%d, %d)", "前景" if is_positive else "背景", int(x), int(y))
 
+    def remove_clicks_in_box(self, x1, y1, x2, y2):
+        """Remove every foreground/background click whose point falls inside the
+        XYXY box (original-image coordinates). Returns the number removed."""
+        x1, y1, x2, y2 = (min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2))
+        removed = 0
+        for lst in (self._pos_clicks, self._neg_clicks):
+            keep = [(cx, cy) for (cx, cy) in lst
+                    if not (x1 <= cx <= x2 and y1 <= cy <= y2)]
+            removed += len(lst) - len(keep)
+            lst[:] = keep
+        if removed:
+            log.info("框选批量删除 %d 个标记点", removed)
+        return removed
+
     def reset(self):
         log.info("清空所有点击")
         self._pos_clicks = []

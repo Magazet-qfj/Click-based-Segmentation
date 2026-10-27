@@ -39,19 +39,31 @@ class InteractiveController:
         self.segmenter.run()
         self.update_image_callback()
 
-    def find_click(self, x, y, radius):
+    def find_click(self, x, y, radius, is_positive=None):
         """Return ``(is_positive, index)`` of the nearest marker within ``radius``
-        pixels (image space), or ``None``. On a tie the foreground marker wins."""
+        pixels (image space), or ``None``. When ``is_positive`` is given, only
+        markers of that type are considered. On a tie the foreground wins."""
         best = None
         best_d2 = None
         pos, neg = self.segmenter.clicks
         for is_pos, lst in ((True, pos), (False, neg)):
+            if is_positive is not None and is_pos != is_positive:
+                continue
             for i, (cx, cy) in enumerate(lst):
                 d2 = (cx - x) ** 2 + (cy - y) ** 2
                 if d2 <= radius * radius and (best_d2 is None or d2 < best_d2):
                     best = (is_pos, i)
                     best_d2 = d2
         return best
+
+    def remove_clicks_in_box(self, x1, y1, x2, y2):
+        """Remove every marker inside the XYXY box, then re-segment if any were
+        removed. Returns the number removed."""
+        removed = self.segmenter.remove_clicks_in_box(x1, y1, x2, y2)
+        if removed:
+            self.segmenter.run()
+            self.update_image_callback()
+        return removed
 
     def reset(self):
         self.segmenter.reset()
