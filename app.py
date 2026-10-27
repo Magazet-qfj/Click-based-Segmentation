@@ -51,7 +51,7 @@ class InteractiveDemoApp(ttk.Frame):
         self.cleanup_kernel = tk.IntVar(value=segmenter.cleanup_kernel)
         self.matte_var = tk.BooleanVar(value=False)
         self.refine_var = tk.BooleanVar(value=(segmenter.refine_mode == 'grabcut'))
-        self.delete_mode = tk.BooleanVar(value=False)
+        self.tool = tk.StringVar(value='foreground')
 
         self._build_menu()
         self._build_layout()
@@ -82,13 +82,34 @@ class InteractiveDemoApp(ttk.Frame):
         bar.add_cascade(label="编辑", menu=edit_menu)
         self.master.config(menu=bar)
 
+    def _build_toolbar(self):
+        toolbar = ttk.LabelFrame(self, text="工具")
+        toolbar.grid(row=0, column=0, sticky='nw', padx=(6, 0), pady=6)
+        tools = [
+            ('foreground', '前景画笔'),
+            ('background', '背景画笔'),
+            ('box', '框选目标'),
+            ('delete', '删除标记'),
+        ]
+        for i, (value, label) in enumerate(tools):
+            tk.Radiobutton(toolbar, text=label, variable=self.tool, value=value,
+                           indicatoron=False, command=self._on_tool_changed,
+                           width=8, anchor='w').grid(
+                row=i, column=0, sticky='ew', padx=6, pady=3)
+        tk.Label(toolbar, text="右键 = 背景\n中键拖动 = 平移\n滚轮 = 缩放",
+                 justify='left', anchor='w', font=('Microsoft YaHei', 8), fg='#888').grid(
+            row=len(tools), column=0, sticky='ew', padx=6, pady=(8, 3))
+
     def _build_layout(self):
-        self.columnconfigure(0, weight=1)
+        self.columnconfigure(1, weight=1)
         self.rowconfigure(0, weight=1)
 
-        # Left: image canvas.
+        # Left: tool toolbar.
+        self._build_toolbar()
+
+        # Center: image canvas.
         canvas_frame = ttk.LabelFrame(self, text="图像")
-        canvas_frame.grid(row=0, column=0, sticky='nsew', padx=6, pady=6)
+        canvas_frame.grid(row=0, column=1, sticky='nsew', padx=6, pady=6)
         canvas_frame.rowconfigure(0, weight=1)
         canvas_frame.columnconfigure(0, weight=1)
         self.canvas = tk.Canvas(canvas_frame, highlightthickness=0, cursor='crosshair',
@@ -98,7 +119,7 @@ class InteractiveDemoApp(ttk.Frame):
 
         # Right: scrollable control panel (follows window height; wheel scrolls it).
         panel = ttk.Frame(self)
-        panel.grid(row=0, column=1, sticky='nsew', padx=6, pady=6)
+        panel.grid(row=0, column=2, sticky='nsew', padx=6, pady=6)
         panel.rowconfigure(0, weight=1)
         panel.columnconfigure(0, weight=1)
 
@@ -134,12 +155,6 @@ class InteractiveDemoApp(ttk.Frame):
             row=1, column=0, sticky='ew', padx=6, pady=3)
         ttk.Button(clicks_frame, text="重新分割", command=self._resegment).grid(
             row=2, column=0, sticky='ew', padx=6, pady=3)
-        ttk.Checkbutton(clicks_frame, text="删除标记点（点选要删的点）",
-                        variable=self.delete_mode, command=self._on_delete_mode_changed).grid(
-            row=3, column=0, sticky='w', padx=6, pady=3)
-        tk.Label(clicks_frame, text="勾选后，左键点击标记点即可删除该点",
-                 justify='left', anchor='w', font=('Microsoft YaHei', 8), fg='#888').grid(
-            row=4, column=0, sticky='ew', padx=6, pady=(0, 3))
 
         export_frame = ttk.LabelFrame(ctrl, text="导出")
         export_frame.grid(row=3, column=0, sticky='ew', pady=4)
@@ -189,10 +204,10 @@ class InteractiveDemoApp(ttk.Frame):
             fill='x', padx=6, pady=(0, 3))
 
         help_text = ("操作说明：\n"
-                     "左键点击 = 标记前景，左键拖拽 = 框选目标\n"
+                     "左侧工具栏切换工具：前景/背景/框选/删除\n"
+                     "左键点击 = 按当前工具操作\n"
                      "右键点击 = 标记背景\n"
                      "中键拖动 = 平移，滚轮 = 缩放\n"
-                     "勾选「删除标记点」后点击标记 = 删除该点\n"
                      "Ctrl + O 打开, Ctrl + S 保存掩码\n"
                      "Ctrl + Shift + S 保存抠图, Ctrl + Z 撤销, Esc 清空")
         tk.Label(ctrl, text=help_text, justify='left', anchor='w',
@@ -202,7 +217,7 @@ class InteractiveDemoApp(ttk.Frame):
         # Bottom status bar: progress / ready — separate from the step guidance.
         self.statusbar = tk.Label(self, text="就绪", anchor='w', relief='sunken',
                                   font=('Microsoft YaHei', 9), padx=6)
-        self.statusbar.grid(row=1, column=0, columnspan=2, sticky='ew')
+        self.statusbar.grid(row=1, column=0, columnspan=3, sticky='ew')
 
         # Wheel over the panel scrolls it (recursive bind covers every child).
         self._bind_panel_wheel(ctrl)
@@ -350,8 +365,8 @@ class InteractiveDemoApp(ttk.Frame):
         self.controller.set_refine_mode('grabcut' if self.refine_var.get() else 'off')
         self.controller.resegment()
 
-    def _on_delete_mode_changed(self):
-        self.image_on_canvas.set_delete_mode(self.delete_mode.get())
+    def _on_tool_changed(self):
+        self.image_on_canvas.set_tool(self.tool.get())
         self._update_instruction()
 
     def _set_cleanup(self, value):
@@ -383,9 +398,18 @@ class InteractiveDemoApp(ttk.Frame):
         npos, nneg = self.controller.click_counts()
         self.status.config(text=f"前景 {npos} 点 · 背景 {nneg} 点")
 
-        if self.delete_mode.get():
+        tool = self.tool.get()
+        if tool == 'delete':
             self.instruction.config(
-                text="删除模式：点击要删除的标记点（绿=前景，红=背景）", bg='#f8d7da')
+                text="删除工具：点击要删除的标记点（绿=前景，红=背景）", bg='#f8d7da')
+            return
+        if tool == 'box':
+            self.instruction.config(
+                text="框选工具：左键拖拽框出目标范围", bg='#fff3cd')
+            return
+        if tool == 'background':
+            self.instruction.config(
+                text="背景画笔：左键点击标记背景（排除区域）", bg='#fff3cd')
             return
 
         if npos == 0:

@@ -1,8 +1,12 @@
 """A zoomable, pannable Tk canvas that reports clicks in image pixel coordinates.
 
-Interaction:
-    - left click          -> positive click callback
-    - quick right click   -> negative click callback
+The left mouse button follows the active tool (set via ``set_tool``):
+    - 'foreground' brush  -> left click adds a foreground point
+    - 'background' brush  -> left click adds a background point
+    - 'box' tool          -> left drag draws a bounding box
+    - 'delete' tool       -> left click deletes the marker under the cursor
+Universal (tool-independent) gestures:
+    - quick right click   -> negative (background) point
     - middle-button drag  -> pan
     - mouse wheel         -> zoom (keeps the point under the cursor fixed)
 """
@@ -33,7 +37,7 @@ class CanvasImage:
         self._box_moved = False
 
         self._delete_callback = None
-        self.delete_mode = False     # when on, a plain left-click deletes a marker
+        self.tool = 'foreground'     # active tool: foreground | background | box | delete
 
         self.canvas.bind('<ButtonPress-1>', self._on_left_press)
         self.canvas.bind('<B1-Motion>', self._on_left_drag)
@@ -58,10 +62,10 @@ class CanvasImage:
         """callback(x, y) receives image-space coords of a delete-mode click."""
         self._delete_callback = callback
 
-    def set_delete_mode(self, enabled):
-        """Toggle marker-delete mode; also swaps the cursor for visual feedback."""
-        self.delete_mode = enabled
-        self.canvas.config(cursor='X_cursor' if enabled else 'crosshair')
+    def set_tool(self, tool):
+        """Switch the active tool and swap the cursor for visual feedback."""
+        self.tool = tool
+        self.canvas.config(cursor='X_cursor' if tool == 'delete' else 'crosshair')
 
     # -------------------------------------------------------------- rendering
     def set_image(self, image, fit=True):
@@ -127,8 +131,8 @@ class CanvasImage:
         dy = event.y - self._box_anchor[1]
         if abs(dx) > 3 or abs(dy) > 3:
             self._box_moved = True
-        if self.delete_mode:
-            return  # no rubber-band box while deleting markers
+        if self.tool != 'box':
+            return  # only the box tool draws a rubber band
         if not self._box_moved:
             return
         x0, y0 = self._box_anchor
@@ -147,26 +151,27 @@ class CanvasImage:
         self._box_anchor = None
         self._box_start = None
 
-        if self._box_moved:
-            # drag ended: commit a box (ignore aborted / degenerate drags).
-            end = self._to_image_coords(event)
-            if end is not None and self._box_callback is not None:
-                x1, y1 = start
-                x2, y2 = end
-                if abs(x2 - x1) >= 3 and abs(y2 - y1) >= 3:
-                    self._box_callback(min(x1, x2), min(y1, y2),
-                                       max(x1, x2), max(y1, y2))
+        tool = self.tool
+        if tool == 'box':
+            # Box tool: only a drag commits a box; a plain click does nothing.
+            if self._box_moved:
+                end = self._to_image_coords(event)
+                if end is not None and self._box_callback is not None:
+                    x1, y1 = start
+                    x2, y2 = end
+                    if abs(x2 - x1) >= 3 and abs(y2 - y1) >= 3:
+                        self._box_callback(min(x1, x2), min(y1, y2),
+                                           max(x1, x2), max(y1, y2))
             return
-        # plain click (no meaningful drag).
-        if self.delete_mode:
-            # Delete mode: a plain click removes the marker under the cursor
+        if tool == 'delete':
+            # Delete tool: a plain click removes the marker under the cursor
             # (the app hit-tests and ignores the click if nothing is there).
             if not self._box_moved and self._delete_callback is not None and start is not None:
                 self._delete_callback(start[0], start[1])
             return
-        # Normal mode: a plain click adds a foreground point.
-        if self._click_callback is not None and start is not None:
-            self._click_callback(is_positive=True, x=start[0], y=start[1])
+        # Foreground/background brush: a plain click adds a point of that type.
+        if not self._box_moved and self._click_callback is not None and start is not None:
+            self._click_callback(is_positive=(tool == 'foreground'), x=start[0], y=start[1])
 
     def _on_middle_press(self, event):
         self._pan_start = (event.x, event.y)
